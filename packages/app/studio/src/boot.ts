@@ -8,6 +8,8 @@ if (localStorage.getItem("opendaw-suppress-unload-guard") !== null) {
 import {App} from "@/ui/App.tsx"
 import {isDefined, panic, Progress, RuntimeNotification, RuntimeNotifier, UUID} from "@opendaw/lib-std"
 import {StudioService} from "@/service/StudioService"
+import {installBridge} from "@/ux/bridge"
+import {drumName, drumSample} from "@/ux/sounds"
 import {SampleMetaData, SoundfontMetaData} from "@opendaw/studio-adapters"
 import {Dialogs} from "@/ui/components/dialogs.tsx"
 import {installCursors} from "@/ui/Cursors.ts"
@@ -121,8 +123,15 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
     })
     WclapCatalog.get().tree().finally()
     const chainedSampleProvider = new ChainedSampleProvider({
-        fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[AudioData, SampleMetaData]> =>
-            OpenSampleAPI.get().load(uuid, progress)
+        fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[AudioData, SampleMetaData]> => {
+            // ux-daw: our synthesized drum samples never leave the browser.
+            const drum = drumSample(uuid)
+            if (drum !== null) {
+                return [drum, {name: drumName(uuid), bpm: 120, duration: drum.numberOfFrames / drum.sampleRate,
+                    sample_rate: drum.sampleRate, origin: "openDAW"}]
+            }
+            return OpenSampleAPI.get().load(uuid, progress)
+        }
     })
     const chainedSoundfontProvider = new ChainedSoundfontProvider({
         fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[ArrayBuffer, SoundfontMetaData]> =>
@@ -142,6 +151,7 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
         sampleManager, soundfontManager, chainedSampleProvider, chainedSoundfontProvider, chainedWclapProvider,
         cloudAuthManager, buildInfo)
     StudioShortcutManager.install(service)
+    installBridge(service)
     if (isDefined(context.playbackStats)) {
         new BufferUnderrunDetector(context.playbackStats, service.engine)
     }
