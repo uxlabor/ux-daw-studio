@@ -11,6 +11,7 @@ import {MixdownSection, OfflineEngineRenderer, Project} from "@opendaw/studio-co
 import {StudioService} from "@/service/StudioService"
 import {DRUMS, SOUNDS} from "./sounds"
 import {BridgeBadge} from "./badge"
+import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, trackSignature} from "./chain"
 
 type Note = [number, number, number, number]
 type Song = {
@@ -22,9 +23,9 @@ type Song = {
         effects: Array<{ type: string, amount: number }>
         clips: Array<{ section: string, notes: Note[] }>
     }>
-    master: { limiter: boolean, target_lufs: number }
+    master: { limiter: boolean, target_lufs: number, tape?: number, dust?: number }
 }
-type Managed = { unit: AudioUnitBox, track: TrackBox, sound: string }
+type Managed = { unit: AudioUnitBox, track: TrackBox, sound: string, fx: string }
 
 const API: string = (import.meta as any).env?.VITE_UX_DAW_API ?? "https://daw-api.uxlabor.ee"
 const SESSION_KEY = "ux-daw-session"
@@ -45,6 +46,7 @@ export class Bridge {
     #applying = false
     #editTimer: ReturnType<typeof setTimeout> | null = null
     #wantSong: string | null = null
+    #masterSig: string | null = null
 
     constructor(service: StudioService) {this.#service = service}
 
@@ -134,6 +136,7 @@ export class Bridge {
             this.#service.projectProfileService.setProject(project, song.title || "Untitled")
             this.#project = project
             this.#managed.clear()
+            this.#masterSig = null
             this.#songId = songId
             project.boxGraph.subscribeTransaction({
                 onBeginTransaction: () => {},
@@ -186,7 +189,7 @@ export class Bridge {
                     ? DRUMS.map(d => ({note: d.note, uuid: UUID.parse(d.uuid), name: d.name, durationInSeconds: d.seconds, exclude: d.name === "hat" || d.name === "openhat"}))
                     : undefined
                 const product = api.createInstrument(factory, {name: t.name, index, ...(attachment ? {attachment} : {})} as any)
-                m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound}
+                m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, fx: ""}
                 this.#managed.set(t.id, m)
             }
             m.unit.volume.setValue(t.mix.volume_db)
@@ -205,6 +208,24 @@ export class Bridge {
                 }
             }
         })
+        // Sound: track chains (duck keys on the drums), master chain, key, swing.
+        const drums = song.tracks.find(t => t.role === "drums" && !t.mix.mute)
+        const duckSource = drums ? this.#managed.get(drums.id)?.unit ?? null : null
+        for (const t of song.tracks) {
+            const m = this.#managed.get(t.id)!
+            const sig = trackSignature(t.effects, {duckSource})
+            if (m.fx !== sig) {
+                buildTrackChain(project, m.unit, t.effects, {duckSource})
+                m.fx = sig
+            }
+        }
+        const ms = masterSignature(song.master)
+        if (this.#masterSig !== ms) {
+            buildMaster(project, song.master)
+            this.#masterSig = ms
+        }
+        applyKey(project, song.key)
+        applySwing(project, [...this.#managed.values()].map(m => m.unit), song.swing)
         // Loop the whole song in the transport.
         const tb = project.timelineBox
         tb.loopArea.from.setValue(0)
