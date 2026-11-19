@@ -57,6 +57,8 @@ jobs:
       - name: Build
         env:
           VITE_UX_DAW_API: https://daw-api.uxlabor.ee
+          # upstream's vite config switches to a CDN base path (/main/releases/<uuid>/) when CI=true; we serve from /
+          CI: "false"
         run: npx turbo build --filter=@opendaw/app-studio...
 
       - name: Check the engine is in the build
