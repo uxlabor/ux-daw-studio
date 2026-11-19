@@ -1,0 +1,77 @@
+# ux-daw studio build (fork of openDAW). Builds the Rust/WASM engine and the studio, and publishes
+# packages/app/studio/dist as a GitHub release asset. The server pulls the latest release; no
+# deploy secrets live in this public repository.
+name: ux-daw studio build
+
+on:
+  push:
+    branches: [ux]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ux-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 23
+          cache: npm
+
+      - name: Rust + wasm target + binaryen
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          . "$HOME/.cargo/env"
+          rustup target add wasm32-unknown-unknown
+          rustup toolchain install nightly --profile minimal --component rust-src
+          rustup target add wasm32-unknown-unknown --toolchain nightly
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          sudo apt-get update && sudo apt-get install -y binaryen
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/target
+          key: cargo-${{ hashFiles('crates/**/Cargo.lock', 'crates/**/Cargo.toml') }}
+          restore-keys: cargo-
+
+      - run: npm ci
+
+      - name: Sponsors list (optional)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/fetch-sponsors.mjs
+
+      - name: Build
+        env:
+          VITE_UX_DAW_API: https://daw-api.uxlabor.ee
+        run: npx turbo build --filter=@opendaw/app-studio...
+
+      - name: Check the engine is in the build
+        run: |
+          test -d packages/app/studio/dist/wasm-engine || { echo "no wasm-engine in dist"; exit 1; }
+          ls packages/app/studio/dist/wasm-engine | head
+
+      - name: Pack
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          tar -C packages/app/studio/dist -czf studio-dist.tar.gz .
+          echo "SHA=$SHA" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "studio-$SHA" studio-dist.tar.gz --title "studio $SHA" --notes "Built from $GITHUB_SHA" --target "$GITHUB_SHA" --latest
