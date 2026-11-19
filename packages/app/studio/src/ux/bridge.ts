@@ -4,7 +4,7 @@
 // - Render: a bar range is rendered offline and uploaded as WAV for measurement and the in-chat player.
 // Only the song schema crosses this boundary (ADR-0029). Nothing private lives in this file (ADR-0028).
 import {DefaultObservableValue, isDefined, Option, UUID} from "@opendaw/lib-std"
-import {PPQN, WavFile} from "@opendaw/lib-dsp"
+import {AudioData, PPQN, WavFile} from "@opendaw/lib-dsp"
 import {AudioUnitBox, NoteRegionBox, TrackBox} from "@opendaw/studio-boxes"
 import {InstrumentFactories, TrackBoxAdapter} from "@opendaw/studio-adapters"
 import {MixdownSection, OfflineEngineRenderer, Project} from "@opendaw/studio-core"
@@ -297,14 +297,14 @@ export class Bridge {
 }
 
 /** 2:1 decimation with averaging, for long clips (keeps the upload under the size cap). */
-function halfRate(a: { sampleRate: number, numberOfFrames: number, numberOfChannels: number, frames: ReadonlyArray<Float32Array> }) {
+function halfRate(a: AudioData): AudioData {
     const n = Math.floor(a.numberOfFrames / 2)
-    const frames = a.frames.map(ch => {
-        const out = new Float32Array(n)
-        for (let i = 0; i < n; i++) out[i] = (ch[2 * i] + ch[2 * i + 1]) / 2
-        return out
+    const out = AudioData.create(a.sampleRate / 2, n, a.numberOfChannels)
+    a.frames.forEach((ch, c) => {
+        const dst = out.frames[c]
+        for (let i = 0; i < n; i++) dst[i] = (ch[2 * i] + ch[2 * i + 1]) / 2
     })
-    return {sampleRate: a.sampleRate / 2, numberOfFrames: n, numberOfChannels: a.numberOfChannels, frames}
+    return out
 }
 
 export const installBridge = (service: StudioService) => {
