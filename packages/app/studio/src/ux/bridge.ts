@@ -9,7 +9,7 @@ import {AudioUnitBox, NoteRegionBox, TrackBox} from "@opendaw/studio-boxes"
 import {InstrumentFactories, TrackBoxAdapter} from "@opendaw/studio-adapters"
 import {MixdownSection, OfflineEngineRenderer, Project} from "@opendaw/studio-core"
 import {StudioService} from "@/service/StudioService"
-import {DRUMS, SOUNDS} from "./sounds"
+import {DRUMS, kitAttachment, kitGmOf, kitPadNote, SOUNDS, TEXTURE_PAD_NOTE, textureAttachment} from "./sounds"
 import {BridgeBadge} from "./badge"
 import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, trackSignature} from "./chain"
 
@@ -187,8 +187,10 @@ export class Bridge {
                 const factory = InstrumentFactories.Named[def.factory] as any
                 const attachment = def.drums
                     ? DRUMS.map(d => ({note: d.note, uuid: UUID.parse(d.uuid), name: d.name, durationInSeconds: d.seconds, exclude: d.name === "hat" || d.name === "openhat"}))
-                    : undefined
+                    : def.kit ? kitAttachment(def.kit) : def.texture ? textureAttachment(def.texture) : undefined
                 const product = api.createInstrument(factory, {name: t.name, index, ...(attachment ? {attachment} : {})} as any)
+                // A texture loops while its note is held (Playfield gate mode 2 = Loop).
+                if (def.texture) for (const {box} of (product.instrumentBox as any).samples.pointerHub.incoming()) (box as any).gate.setValue(2)
                 m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, fx: ""}
                 this.#managed.set(t.id, m)
             }
@@ -198,13 +200,17 @@ export class Bridge {
             // Notes: replace every region on this track with one region per section that has notes.
             const adapter = project.boxAdapters.adapterFor(m.track, TrackBoxAdapter)
             for (const region of adapter.regions.collection.asArray()) region.box.delete()
+            const def = SOUNDS[t.sound] ?? SOUNDS["pad/warm"]
+            const rr = new Map<string, number>() // hat and shaker alternation runs across the whole track
             for (const clip of t.clips) {
                 const section = song.sections.find(s => s.id === clip.section)
                 if (!section || clip.notes.length === 0) continue
                 const position = starts.get(section.id)! * BAR
                 const region: NoteRegionBox = api.createNoteRegion({trackBox: m.track, position, duration: section.bars * BAR, name: section.name})
                 for (const [beat, pitch, len, vel] of clip.notes) {
-                    api.createNoteEvent({owner: region, position: Math.round(beat * Q), duration: Math.max(1, Math.round(len * Q)), pitch, velocity: vel / 127})
+                    const p = def.kit ? kitPadNote(def.kit, pitch, vel, rr) : def.texture ? TEXTURE_PAD_NOTE : pitch
+                    if (p === null) continue
+                    api.createNoteEvent({owner: region, position: Math.round(beat * Q), duration: Math.max(1, Math.round(len * Q)), pitch: p, velocity: vel / 127})
                 }
             }
         })
@@ -258,6 +264,7 @@ export class Bridge {
         })
         for (const t of song.tracks) {
             const m = this.#managed.get(t.id)!
+            const def = SOUNDS[t.sound] ?? SOUNDS["pad/warm"]
             t.mix = {
                 volume_db: Math.round(m.unit.volume.getValue() * 10) / 10,
                 pan: Math.round(m.unit.panning.getValue() * 100) / 100,
@@ -275,7 +282,9 @@ export class Bridge {
                         const sec = starts.find(s => absBeat >= s.from && absBeat < s.to)
                         if (!sec) continue
                         const list = bySection.get(sec.id) ?? []
-                        list.push([Math.round((absBeat - sec.from) * 1000) / 1000, ev.pitch, Math.round(ev.duration / Q * 1000) / 1000,
+                        const pitch = def.kit ? kitGmOf(def.kit, ev.pitch) : ev.pitch
+                        if (pitch === null) continue
+                        list.push([Math.round((absBeat - sec.from) * 1000) / 1000, pitch, Math.round(ev.duration / Q * 1000) / 1000,
                             Math.max(1, Math.min(127, Math.round(ev.velocity * 127)))])
                         bySection.set(sec.id, list)
                     }

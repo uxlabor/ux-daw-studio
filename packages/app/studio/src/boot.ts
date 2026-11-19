@@ -9,7 +9,7 @@ import {App} from "@/ui/App.tsx"
 import {isDefined, panic, Progress, RuntimeNotification, RuntimeNotifier, UUID} from "@opendaw/lib-std"
 import {StudioService} from "@/service/StudioService"
 import {installBridge} from "@/ux/bridge"
-import {drumName, drumSample} from "@/ux/sounds"
+import {drumName, drumSample, uxSample, uxSampleName} from "@/ux/sounds"
 import {SampleMetaData, SoundfontMetaData} from "@opendaw/studio-adapters"
 import {Dialogs} from "@/ui/components/dialogs.tsx"
 import {installCursors} from "@/ui/Cursors.ts"
@@ -129,6 +129,12 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
             if (drum !== null) {
                 return [drum, {name: drumName(uuid), bpm: 120, duration: drum.numberOfFrames / drum.sampleRate,
                     sample_rate: drum.sampleRate, origin: "openDAW"}]
+            }
+            const ours = uxSample(uuid)
+            if (ours !== null) {
+                const data = await ours
+                return [data, {name: uxSampleName(uuid), bpm: 120, duration: data.numberOfFrames / data.sampleRate,
+                    sample_rate: data.sampleRate, origin: "openDAW"}]
             }
             return OpenSampleAPI.get().load(uuid, progress)
         }
