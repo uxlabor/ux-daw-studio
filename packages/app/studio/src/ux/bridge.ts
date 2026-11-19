@@ -9,7 +9,7 @@ import {AudioUnitBox, NoteRegionBox, TrackBox} from "@opendaw/studio-boxes"
 import {InstrumentFactories, TrackBoxAdapter} from "@opendaw/studio-adapters"
 import {MixdownSection, OfflineEngineRenderer, Project} from "@opendaw/studio-core"
 import {StudioService} from "@/service/StudioService"
-import {DRUMS, kitAttachment, kitGmOf, kitPadNote, SOUNDS, TEXTURE_PAD_NOTE, textureAttachment} from "./sounds"
+import {DRUMS, kitAttachment, kitGmOf, kitPadNote, PAD_PAN, padRole, SOUNDS, TEXTURE_PAD_NOTE, textureAttachment} from "./sounds"
 import {BridgeBadge} from "./badge"
 import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, trackSignature} from "./chain"
 
@@ -191,6 +191,10 @@ export class Bridge {
                 const product = api.createInstrument(factory, {name: t.name, index, ...(attachment ? {attachment} : {})} as any)
                 // A texture loops while its note is held (Playfield gate mode 2 = Loop).
                 if (def.texture) for (const {box} of (product.instrumentBox as any).samples.pointerHub.incoming()) (box as any).gate.setValue(2)
+                if (def.kit || def.drums) for (const {box} of (product.instrumentBox as any).samples.pointerHub.incoming()) {
+                    const role = padRole(def.kit, (box as any).index.getValue())
+                    if (role && PAD_PAN[role] !== undefined) (box as any).panning.setValue(PAD_PAN[role])
+                }
                 m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, fx: ""}
                 this.#managed.set(t.id, m)
             }

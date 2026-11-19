@@ -27,7 +27,7 @@ const TAG = "ux·"
 const SCRIPT_UPDATE_BASE = 1
 
 /** Loudness calibration: Maximizer threshold that lands a full lo-fi section on -14 LUFS (measured live). */
-export const LIMITER_AT_MINUS_14 = -7
+export const LIMITER_AT_MINUS_14 = -6
 
 const amountOf = (effects: ReadonlyArray<Fx>, type: string) => effects.find(e => e.type === type)?.amount ?? 0
 const r3 = (x: number) => Math.round(x * 1000) / 1000
@@ -112,7 +112,7 @@ export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: R
         v.decay.setValue(0.45 + 0.4 * reverb)
         v.damping.setValue(0.35)
         v.bandwidth.setValue(0.55)
-        v.wet.setValue(-28 + 20 * reverb)
+        v.wet.setValue(-24 + 18 * reverb)
         v.dry.setValue(0)
     }
 }
@@ -191,7 +191,7 @@ class Processor {
                     const base = d0 + 0.012 * sampleRate, depth = (0.0015 + 0.004 * this.cho) * sampleRate
                     const wl = tap(this.bufL, w, base + depth * Math.sin(this.phC))
                     const wr = tap(this.bufR, w, base + depth * Math.sin(this.phC + Math.PI / 2))
-                    const m = 0.5 * this.cho
+                    const m = Math.min(0.5, 0.15 + 0.6 * this.cho)
                     l = l * (1 - m) + wl * m
                     r = r * (1 - m) + wr * m
                 }

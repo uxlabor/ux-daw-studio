@@ -252,3 +252,14 @@ function decodeWav16(buf: ArrayBuffer): AudioData {
     }
     return out
 }
+
+/** Where each drum sits left to right, as from the drummer's seat seen from the front: a kit is stereo, kick and snare centred. */
+export const PAD_PAN: Record<string, number> = {
+    hat: 0.3, openhat: 0.25, shaker: -0.35, perc1: -0.4, perc2: 0.4, rim: -0.12, tom: -0.3, clap: 0.05
+}
+
+/** The role of a pad note in one of our kits, or of a note in the synthesized kit. */
+export function padRole(kit: KitId | undefined, note: number): string | null {
+    if (kit) return kitPads(kit)[note - PAD_BASE]?.role ?? null
+    return DRUMS.find(d => d.note === note)?.name ?? null
+}
