@@ -123,7 +123,7 @@ export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: R
         v.decay.setValue(0.45 + 0.4 * reverb)
         v.damping.setValue(0.35)
         v.bandwidth.setValue(0.55)
-        v.wet.setValue(-24 + 18 * reverb)
+        v.wet.setValue(-20 + 18 * reverb)
         v.dry.setValue(0)
     }
 }
@@ -199,9 +199,11 @@ class Processor {
                 }
                 if (this.cho > 0) {
                     this.phC += choInc
-                    const base = d0 + 0.012 * sampleRate, depth = (0.0015 + 0.004 * this.cho) * sampleRate
-                    const wl = tap(this.bufL, w, base + depth * Math.sin(this.phC))
-                    const wr = tap(this.bufR, w, base + depth * Math.sin(this.phC + Math.PI / 2))
+                    // Stereo chorus: different delays left and right, modulated in opposite phase, so even a
+                    // mono source comes out wide (side about the wet level under the mid).
+                    const depth = (0.0015 + 0.004 * this.cho) * sampleRate
+                    const wl = tap(this.bufL, w, d0 + 0.009 * sampleRate + depth * Math.sin(this.phC))
+                    const wr = tap(this.bufR, w, d0 + 0.0165 * sampleRate - depth * Math.sin(this.phC))
                     const m = Math.min(0.5, 0.15 + 0.6 * this.cho)
                     l = l * (1 - m) + wl * m
                     r = r * (1 - m) + wr * m

@@ -268,7 +268,7 @@ function decodeWav16(buf: ArrayBuffer): AudioData {
 
 /** Where each drum sits left to right, as from the drummer's seat seen from the front: a kit is stereo, kick and snare centred. */
 export const PAD_PAN: Record<string, number> = {
-    hat: 0.3, openhat: 0.25, shaker: -0.35, perc1: -0.4, perc2: 0.4, rim: -0.12, tom: -0.3, clap: 0.05
+    hat: 0.4, openhat: 0.35, shaker: -0.45, perc1: -0.5, perc2: 0.5, rim: -0.15, tom: -0.35, clap: 0.08
 }
 
 /** The role of a pad note in one of our kits, or of a note in the synthesized kit. */
