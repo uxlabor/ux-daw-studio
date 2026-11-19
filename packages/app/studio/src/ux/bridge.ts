@@ -183,7 +183,7 @@ export class Bridge {
                 const def = SOUNDS[t.sound] ?? SOUNDS["pad/warm"]
                 const factory = InstrumentFactories.Named[def.factory] as any
                 const attachment = def.drums
-                    ? DRUMS.map(d => ({note: d.note, uuid: d.uuid, name: d.name, durationInSeconds: d.seconds, exclude: d.name === "hat" || d.name === "openhat"}))
+                    ? DRUMS.map(d => ({note: d.note, uuid: UUID.parse(d.uuid), name: d.name, durationInSeconds: d.seconds, exclude: d.name === "hat" || d.name === "openhat"}))
                     : undefined
                 const product = api.createInstrument(factory, {name: t.name, index, ...(attachment ? {attachment} : {})} as any)
                 m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound}
