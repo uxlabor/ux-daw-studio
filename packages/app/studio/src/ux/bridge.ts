@@ -202,7 +202,7 @@ export class Bridge {
                 m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, fx: ""}
                 this.#managed.set(t.id, m)
             }
-            m.unit.volume.setValue(t.mix.volume_db + trimOf(t.sound))
+            m.unit.volume.setValue(t.mix.volume_db)
             m.unit.panning.setValue(t.mix.pan)
             m.unit.mute.setValue(t.mix.mute)
             // Notes: replace every region on this track with one region per section that has notes.
@@ -227,9 +227,9 @@ export class Bridge {
         const duckSource = drums ? this.#managed.get(drums.id)?.unit ?? null : null
         for (const t of song.tracks) {
             const m = this.#managed.get(t.id)!
-            const sig = trackSignature(t.effects, {duckSource})
+            const sig = trackSignature(t.effects, {duckSource, trim: trimOf(t.sound)})
             if (m.fx !== sig) {
-                buildTrackChain(project, m.unit, t.effects, {duckSource})
+                buildTrackChain(project, m.unit, t.effects, {duckSource, trim: trimOf(t.sound)})
                 m.fx = sig
             }
         }
@@ -277,7 +277,7 @@ export class Bridge {
             const m = this.#managed.get(t.id)!
             const def = SOUNDS[t.sound] ?? SOUNDS["pad/warm"]
             t.mix = {
-                volume_db: Math.round((m.unit.volume.getValue() - trimOf(t.sound)) * 10) / 10,
+                volume_db: Math.round(m.unit.volume.getValue() * 10) / 10,
                 pan: Math.round(m.unit.panning.getValue() * 100) / 100,
                 mute: m.unit.mute.getValue()
             }
@@ -364,7 +364,7 @@ function patchAttachment(project: Project, id: string | undefined): SoundfontFil
     return SoundfontFileBox.create(project.boxGraph, uuid, box => box.fileName.setValue(patch.file))
 }
 
-/** The level match of a patch in dB: the song's volume is what the listener hears relative to other patches. */
+/** The level match of a patch in dB, applied as a gain at the head of the track chain (the fader stays the user's). */
 function trimOf(sound: string): number {
     const id = SOUNDS[sound]?.patch
     return id ? PATCHES[id]?.trim ?? 0 : 0

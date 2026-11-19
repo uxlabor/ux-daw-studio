@@ -59,16 +59,26 @@ const werkstatt = (project: Project, field: any, label: string, code: string): W
 
 // ---------- track chain ----------
 
-export type TrackChainContext = { duckSource: AudioUnitBox | null }
+/** duckSource: the drums unit for the duck sidechain; trim: the patch level match in dB (WP4). */
+export type TrackChainContext = { duckSource: AudioUnitBox | null, trim?: number }
 
 /** A string that changes whenever the built chain would change. */
 export const trackSignature = (effects: ReadonlyArray<Fx>, ctx: TrackChainContext) =>
     JSON.stringify([...effects].sort((a, b) => a.type.localeCompare(b.type)).map(e => [e.type, r3(e.amount)]))
     + (amountOf(effects, "duck") > 0 && ctx.duckSource ? UUID.toString(ctx.duckSource.address.uuid) : "")
+    + (ctx.trim ? `|trim${r3(ctx.trim)}` : "")
 
 export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: ReadonlyArray<Fx>, ctx: TrackChainContext) {
     const field = unit.audioEffects
     clearOurs(field)
+    // Patch level match first, so the compressor and the scripts see the patch at its matched level.
+    // StereoTool gain stops at +12 dB; a larger trim takes two.
+    let trim = ctx.trim ?? 0
+    while (Math.abs(trim) > 0.05) {
+        const step = Math.max(-24, Math.min(12, trim))
+        insert<StereoToolDeviceBox>(project, field, EffectFactories.AudioNamed.StereoTool, "patch level").volume.setValue(step)
+        trim -= step
+    }
     const comp = amountOf(effects, "compressor")
     if (comp > 0) {
         const c = insert<CompressorDeviceBox>(project, field, EffectFactories.AudioNamed.Compressor, "compressor")
