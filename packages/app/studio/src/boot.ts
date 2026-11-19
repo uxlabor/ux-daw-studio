@@ -10,6 +10,7 @@ import {isDefined, panic, Progress, RuntimeNotification, RuntimeNotifier, UUID} 
 import {StudioService} from "@/service/StudioService"
 import {installBridge} from "@/ux/bridge"
 import {drumName, drumSample, uxSample, uxSampleName} from "@/ux/sounds"
+import {uxSoundfont} from "@/ux/patches"
 import {SampleMetaData, SoundfontMetaData} from "@opendaw/studio-adapters"
 import {Dialogs} from "@/ui/components/dialogs.tsx"
 import {installCursors} from "@/ui/Cursors.ts"
@@ -140,8 +141,16 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
         }
     })
     const chainedSoundfontProvider = new ChainedSoundfontProvider({
-        fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[ArrayBuffer, SoundfontMetaData]> =>
-            OpenSoundfontAPI.get().load(uuid, progress)
+        fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[ArrayBuffer, SoundfontMetaData]> => {
+            // ux-daw: our lo-fi patches, built from CC0 samples (VCSL), served by this site.
+            const ours = uxSoundfont(uuid)
+            if (ours !== null) {
+                const data = await ours.data
+                return [data, {name: ours.file.replace(/\.sf2$/, ""), size: data.byteLength, url: `/ux/patches/${ours.file}`,
+                    license: "CC0 1.0 (VCSL samples)", origin: "openDAW"}]
+            }
+            return OpenSoundfontAPI.get().load(uuid, progress)
+        }
     })
     const chainedWclapProvider = new ChainedWclapProvider()
     WclapStorage.installRemote(id => WclapCatalog.get().load(id)

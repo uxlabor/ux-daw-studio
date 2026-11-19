@@ -6,7 +6,7 @@ import {UUID} from "@opendaw/lib-std"
 import {InstrumentFactories} from "@opendaw/studio-adapters"
 import KITS from "./kits.json"
 
-export type SoundDef = { factory: keyof typeof InstrumentFactories.Named, drums?: boolean, kit?: KitId, texture?: TextureId }
+export type SoundDef = { factory: keyof typeof InstrumentFactories.Named, drums?: boolean, kit?: KitId, texture?: TextureId, patch?: string }
 
 export const SOUNDS: Record<string, SoundDef> = {
     "kit/body": {factory: "Playfield", drums: true},
@@ -24,7 +24,20 @@ export const SOUNDS: Record<string, SoundDef> = {
     "pad/warm": {factory: "Vaporisateur"},
     "lead/square": {factory: "Vaporisateur"},
     "pluck/soft": {factory: "Korpus"},
-    "keys/cz": {factory: "Neon"}
+    "keys/cz": {factory: "Neon"},
+    // Lo-fi patches (WP4): sampled SoundFonts of ours, and openDAW synths with set parameters (./patches).
+    "keys/felt-piano": {factory: "Soundfont", patch: "keys/felt-piano"},
+    "keys/tape-piano": {factory: "Soundfont", patch: "keys/tape-piano"},
+    "keys/mellow-ep": {factory: "Soundfont", patch: "keys/mellow-ep"},
+    "keys/wobbly-ep": {factory: "Soundfont", patch: "keys/wobbly-ep"},
+    "mallet/vibes": {factory: "Soundfont", patch: "mallet/vibes"},
+    "pluck/kalimba": {factory: "Soundfont", patch: "pluck/kalimba"},
+    "bass/round-sub": {factory: "Vaporisateur", patch: "bass/round-sub"},
+    "bass/upright": {factory: "Vaporisateur", patch: "bass/upright"},
+    "bass/warm-synth": {factory: "Vaporisateur", patch: "bass/warm-synth"},
+    "pad/warm-tape": {factory: "Vaporisateur", patch: "pad/warm-tape"},
+    "pad/airy": {factory: "Vaporisateur", patch: "pad/airy"},
+    "lead/mellow": {factory: "Vaporisateur", patch: "lead/mellow"}
 }
 
 type DrumName = "kick" | "rim" | "snare" | "clap" | "hat" | "tom" | "openhat"

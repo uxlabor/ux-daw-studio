@@ -5,12 +5,13 @@
 // Only the song schema crosses this boundary (ADR-0029). Nothing private lives in this file (ADR-0028).
 import {DefaultObservableValue, isDefined, Option, UUID} from "@opendaw/lib-std"
 import {AudioData, PPQN, WavFile} from "@opendaw/lib-dsp"
-import {AudioUnitBox, NoteRegionBox, TrackBox} from "@opendaw/studio-boxes"
+import {AudioUnitBox, NoteRegionBox, SoundfontFileBox, TrackBox} from "@opendaw/studio-boxes"
 import {InstrumentFactories, TrackBoxAdapter} from "@opendaw/studio-adapters"
 import {MixdownSection, OfflineEngineRenderer, Project} from "@opendaw/studio-core"
 import {StudioService} from "@/service/StudioService"
 import {DRUMS, kitAttachment, kitGmOf, kitPadNote, PAD_PAN, padRole, SOUNDS, TEXTURE_PAD_NOTE, textureAttachment} from "./sounds"
 import {BridgeBadge} from "./badge"
+import {PATCHES, sf2Uuid} from "./patches"
 import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, trackSignature} from "./chain"
 
 type Note = [number, number, number, number]
@@ -187,7 +188,8 @@ export class Bridge {
                 const factory = InstrumentFactories.Named[def.factory] as any
                 const attachment = def.drums
                     ? DRUMS.map(d => ({note: d.note, uuid: UUID.parse(d.uuid), name: d.name, durationInSeconds: d.seconds, exclude: d.name === "hat" || d.name === "openhat"}))
-                    : def.kit ? kitAttachment(def.kit) : def.texture ? textureAttachment(def.texture) : undefined
+                    : def.kit ? kitAttachment(def.kit) : def.texture ? textureAttachment(def.texture)
+                    : patchAttachment(project, def.patch)
                 const product = api.createInstrument(factory, {name: t.name, index, ...(attachment ? {attachment} : {})} as any)
                 // A texture loops while its note is held (Playfield gate mode 2 = Loop).
                 if (def.texture) for (const {box} of (product.instrumentBox as any).samples.pointerHub.incoming()) (box as any).gate.setValue(2)
@@ -195,10 +197,12 @@ export class Bridge {
                     const role = padRole(def.kit, (box as any).index.getValue())
                     if (role && PAD_PAN[role] !== undefined) (box as any).panning.setValue(PAD_PAN[role])
                 }
+                const patch = def.patch ? PATCHES[def.patch] : undefined
+                if (patch?.kind === "synth") patch.set(product.instrumentBox)
                 m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, fx: ""}
                 this.#managed.set(t.id, m)
             }
-            m.unit.volume.setValue(t.mix.volume_db)
+            m.unit.volume.setValue(t.mix.volume_db + trimOf(t.sound))
             m.unit.panning.setValue(t.mix.pan)
             m.unit.mute.setValue(t.mix.mute)
             // Notes: replace every region on this track with one region per section that has notes.
@@ -270,7 +274,7 @@ export class Bridge {
             const m = this.#managed.get(t.id)!
             const def = SOUNDS[t.sound] ?? SOUNDS["pad/warm"]
             t.mix = {
-                volume_db: Math.round(m.unit.volume.getValue() * 10) / 10,
+                volume_db: Math.round((m.unit.volume.getValue() - trimOf(t.sound)) * 10) / 10,
                 pan: Math.round(m.unit.panning.getValue() * 100) / 100,
                 mute: m.unit.mute.getValue()
             }
@@ -345,4 +349,20 @@ export const installBridge = (service: StudioService) => {
     const bridge = new Bridge(service);
     (window as any).uxDawBridge = bridge
     bridge.start().catch(e => console.error("[ux-daw] start", e))
+}
+
+/** A sampled patch's SoundFont file box (the soundfont provider in boot.ts serves our files), or nothing. */
+function patchAttachment(project: Project, id: string | undefined): SoundfontFileBox | undefined {
+    const patch = id ? PATCHES[id] : undefined
+    if (patch?.kind !== "sf2") return undefined
+    const uuid = UUID.parse(sf2Uuid(patch.file))
+    const existing = project.boxGraph.findBox(uuid)
+    if (existing.nonEmpty()) return existing.unwrap() as SoundfontFileBox
+    return SoundfontFileBox.create(project.boxGraph, uuid, box => box.fileName.setValue(patch.file))
+}
+
+/** The level match of a patch in dB: the song's volume is what the listener hears relative to other patches. */
+function trimOf(sound: string): number {
+    const id = SOUNDS[sound]?.patch
+    return id ? PATCHES[id]?.trim ?? 0 : 0
 }
