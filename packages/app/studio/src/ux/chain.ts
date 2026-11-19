@@ -12,6 +12,7 @@ import {
     CompressorDeviceBox,
     DattorroReverbDeviceBox,
     DelayDeviceBox,
+    GrooveShuffleBox,
     MaximizerDeviceBox,
     StereoToolDeviceBox,
     WerkstattDeviceBox,
@@ -325,14 +326,44 @@ export function applyKey(project: Project, key: string) {
 }
 
 /** Swing 0..0.5 from the song: the project shuffle groove, and a Zeitgeist on each unit that should swing. */
-export function applySwing(project: Project, units: ReadonlyArray<AudioUnitBox>, swing: number) {
-    const groove = project.rootBoxAdapter.groove.box as any
-    groove.amount.setValue(0.5 + swing * 0.5)
-    for (const unit of units) {
+/** Song swing on the shared groove; a track with its own swing (WP5) gets its own shuffle box. */
+export function applySwing(project: Project, units: ReadonlyArray<{ unit: AudioUnitBox, swing?: number }>, swing: number) {
+    const root = project.rootBoxAdapter.groove.box as any
+    root.amount.setValue(0.5 + swing * 0.5)
+    for (const {unit, swing: own} of units) {
         const field = unit.midiEffects
-        const has = (IndexedBox.collectIndexedBoxes(field as any) as ReadonlyArray<any>)
-            .some(b => b instanceof ZeitgeistDeviceBox && b.label.getValue() === TAG + "swing")
-        if (swing > 0 && !has) insert(project, field, EffectFactories.MidiNamed.Zeitgeist, "swing")
-        if (swing === 0 && has) clearOurs(field)
+        const ours = (IndexedBox.collectIndexedBoxes(field as any) as ReadonlyArray<any>)
+            .find(b => b instanceof ZeitgeistDeviceBox && b.label.getValue() === TAG + "swing") as ZeitgeistDeviceBox | undefined
+        const amount = own ?? swing
+        if (amount === 0) {
+            if (ours) dropOwnGroove(ours, root)
+            if (ours) clearOurs(field)
+            continue
+        }
+        const z = ours ?? insert<ZeitgeistDeviceBox>(project, field, EffectFactories.MidiNamed.Zeitgeist, "swing")
+        const target = z.groove.targetVertex.unwrapOrNull()?.box as any
+        if (own === undefined) {
+            if (target !== root) {
+                dropOwnGroove(z, root)
+                z.groove.refer(root)
+            }
+        } else if (target && target !== root && target instanceof GrooveShuffleBox) {
+            target.amount.setValue(0.5 + own * 0.5)
+        } else {
+            const box = GrooveShuffleBox.create(project.boxGraph, UUID.generate(), b => {
+                b.label.setValue(TAG + "track swing")
+                b.amount.setValue(0.5 + own * 0.5)
+                b.duration.setValue(root.duration.getValue())
+            })
+            z.groove.refer(box)
+        }
+    }
+}
+
+const dropOwnGroove = (z: ZeitgeistDeviceBox, root: any) => {
+    const target = z.groove.targetVertex.unwrapOrNull()?.box as any
+    if (target && target !== root && target instanceof GrooveShuffleBox) {
+        z.groove.refer(root)
+        target.delete()
     }
 }

@@ -19,7 +19,7 @@ type Song = {
     v: 0, title: string, bpm: number, key: string, time: "4/4", swing: number
     sections: Array<{ id: string, name: string, bars: number }>
     tracks: Array<{
-        id: string, name: string, role: string, sound: string
+        id: string, name: string, role: string, sound: string, swing?: number
         mix: { volume_db: number, pan: number, mute: boolean }
         effects: Array<{ type: string, amount: number }>
         clips: Array<{ section: string, notes: Note[] }>
@@ -239,7 +239,10 @@ export class Bridge {
             this.#masterSig = ms
         }
         applyKey(project, song.key)
-        applySwing(project, [...this.#managed.values()].map(m => m.unit), song.swing)
+        applySwing(project, song.tracks.flatMap(t => {
+            const m = this.#managed.get(t.id)
+            return m ? [{unit: m.unit, swing: t.swing}] : []
+        }), song.swing)
         // Loop the whole song in the transport.
         const tb = project.timelineBox
         tb.loopArea.from.setValue(0)
