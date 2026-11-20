@@ -4,6 +4,7 @@
 // - Render: a bar range is rendered offline and uploaded as WAV for measurement and the in-chat player.
 // Only the song schema crosses this boundary (ADR-0029). Nothing private lives in this file (ADR-0028).
 import {DefaultObservableValue, isDefined, Option, UUID} from "@opendaw/lib-std"
+import {Browser} from "@opendaw/lib-dom"
 import {AudioData, PPQN, WavFile} from "@opendaw/lib-dsp"
 import {AudioUnitBox, NoteRegionBox, SoundfontFileBox, TrackBox} from "@opendaw/studio-boxes"
 import {InstrumentFactories, TrackBoxAdapter} from "@opendaw/studio-adapters"
@@ -30,6 +31,11 @@ type Managed = { unit: AudioUnitBox, track: TrackBox, sound: string, fx: string 
 
 const API: string = (import.meta as any).env?.VITE_UX_DAW_API ?? "https://daw-api.uxlabor.ee"
 const SESSION_KEY = "ux-daw-session"
+// A tab opened before a studio update asks for the old build's files, which are gone: it reloads itself.
+const BUILD: string = import.meta.env.BUILD_UUID ?? ""
+const SONG_KEY = "ux-daw-song"
+const RELOADED_KEY = "ux-daw-reloaded-at"
+const STUDIO_UPDATED = "studio_updated"
 const BAR = PPQN.Bar
 const Q = PPQN.Quarter
 
@@ -48,6 +54,7 @@ export class Bridge {
     #editTimer: ReturnType<typeof setTimeout> | null = null
     #wantSong: string | null = null
     #masterSig: string | null = null
+    #queue: Promise<void> = Promise.resolve()
 
     constructor(service: StudioService) {this.#service = service}
 
@@ -69,6 +76,8 @@ export class Bridge {
                 console.warn("[ux-daw] session", e)
             }
         }
+        if (!this.#wantSong) this.#wantSong = sessionStorage.getItem(SONG_KEY)
+        sessionStorage.removeItem(SONG_KEY)
         this.#session = sessionStorage.getItem(SESSION_KEY)
         if (!this.#session) {
             this.#badge.set("idle", "Not connected. Open the studio from your AI chat.")
@@ -89,10 +98,14 @@ export class Bridge {
             this.#badge.set("ok", "Connected to your AI")
             this.#send({t: "open", song_id: this.#wantSong ?? this.#songId})
         }
-        ws.onmessage = ev => this.#onMessage(JSON.parse(String(ev.data))).catch(e => {
-            console.error("[ux-daw]", e)
-            this.#badge.set("error", `Bridge error: ${(e as Error).message}`)
-        })
+        // One message at a time: a render must not start while the song it renders is still loading.
+        ws.onmessage = ev => {
+            const m = JSON.parse(String(ev.data))
+            this.#queue = this.#queue.then(() => this.#onMessage(m)).catch(e => {
+                console.error("[ux-daw]", e)
+                this.#badge.set("error", `Bridge error: ${(e as Error).message}`)
+            })
+        }
         ws.onclose = ev => {
             this.#ws = null
             if (ev.code === 1008 || ev.code === 4401) {
@@ -107,9 +120,32 @@ export class Bridge {
 
     #send(msg: unknown) {if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify(msg))}
 
+    /** True when the served studio is a newer build than this tab (checked against /build-info.json). */
+    async #outdated(): Promise<boolean> {
+        if (!BUILD || Browser.isLocalHost()) return false
+        try {
+            const r = await fetch(`/build-info.json?v=${Date.now()}`, {cache: "no-store"})
+            const info = await r.json()
+            return typeof info?.uuid === "string" && info.uuid !== BUILD
+        } catch {return false}
+    }
+
+    /** Reloads the tab onto the new build, keeping the song. At most once a minute, so a cache problem cannot loop. */
+    #reloadForUpdate(songId: string | null, before?: () => Promise<unknown>): boolean {
+        const last = Number(sessionStorage.getItem(RELOADED_KEY) ?? 0)
+        if (Date.now() - last < 60_000) return false
+        sessionStorage.setItem(RELOADED_KEY, String(Date.now()))
+        const keep = songId ?? this.#songId
+        if (keep) sessionStorage.setItem(SONG_KEY, keep)
+        this.#badge.set("busy", "The studio was updated. Reloading…")
+        void (before?.() ?? Promise.resolve()).catch(() => {}).finally(() => location.reload())
+        return true
+    }
+
     async #onMessage(m: any) {
         switch (m.t) {
             case "song":
+                if (await this.#outdated() && this.#reloadForUpdate(m.song_id)) return
                 return this.#loadSong(m.song_id, m.version, m.song, m.reason)
             case "render":
                 return this.#render(m)
@@ -315,6 +351,8 @@ export class Bridge {
         const fail = (why: string) => fetch(`${API}/studio/clip?req=${m.req}&error=${encodeURIComponent(why)}`, {
             method: "POST", headers: {authorization: `Bearer ${this.#session}`}
         })
+        // tell the API first (it waits for the reloaded tab and asks again), then reload
+        if (await this.#outdated() && this.#reloadForUpdate(m.song_id, () => fail(STUDIO_UPDATED))) return
         if (!this.#project || m.song_id !== this.#songId) return void fail("the studio shows another song")
         this.#badge.set("busy", `Rendering bars ${m.from_bar}–${m.from_bar + m.bars - 1}…`)
         try {
