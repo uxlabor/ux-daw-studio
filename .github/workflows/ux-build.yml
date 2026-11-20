@@ -76,6 +76,15 @@ jobs:
           CHANGED=$(git diff --name-only "$BASE" HEAD -- . ':!packages/app/studio/src/ux' ':!packages/app/studio/vite.ux.config.ts' ':!.github')
           if [ -n "$CHANGED" ]; then echo "openDAW files edited:"; echo "$CHANGED"; exit 1; fi
 
+      # R2: the browser plays what the API sends and chooses nothing. Kit pad choice (velocity layers, round robin,
+      # General MIDI fallbacks) moved to the API on 20 Nov (Stage 0 audit F5), and with it the synthesized kit/body
+      # drums (now files). The API no longer sends layer ranges, alternation groups or fallbacks (its boundary test
+      # checks that); this step fails if code that would use them comes back here.
+      - name: No pad choice or sound synthesis in the browser (R2)
+        run: |
+          HITS=$(grep -nE 'kitPadNote|drumSample|\.fallback\b|\.rr\b|velocity\s*\[|velocity\s*[<>]=?|round.?robin' packages/app/studio/src/ux/*.ts || true)
+          if [ -n "$HITS" ]; then echo "selection logic in the browser (R2):"; echo "$HITS"; exit 1; fi
+
       - name: The bridge is in the build
         run: grep -l "uxDawBridge" packages/app/studio/dist/*.js >/dev/null || { echo "the bridge is not in the build"; exit 1; }
 

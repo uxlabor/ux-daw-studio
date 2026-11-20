@@ -10,13 +10,13 @@ import {AudioUnitBox, NoteRegionBox, TrackBox} from "@opendaw/studio-boxes"
 import {InstrumentFactories, TrackBoxAdapter} from "@opendaw/studio-adapters"
 import {MixdownSection, OfflineEngineRenderer, Project} from "@opendaw/studio-core"
 import {StudioService} from "@/service/StudioService"
-import {DRUMS, SOUNDS} from "./sounds"
+import {SOUNDS} from "./sounds"
 import {BridgeBadge} from "./badge"
 import {mountAbout} from "./about"
 import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, sectionFilterFrequency, trackSignature} from "./chain"
 import {automationSignature, clearAutomation, type TrackAutomation, writeAutomation} from "./automation"
 import {
-    applyPadSlice, applySynth, attachProviders, type Instrument, isTexture, kitAttachment, kitGmOf, kitPadNote, padPan, registerAssets, soundfontBox
+    applyPadSlice, applySynth, attachProviders, type Instrument, isTexture, kitAttachment, kitGmOf, kitSignature, padPan, registerAssets, soundfontBox
 } from "./instruments"
 
 type Note = [number, number, number, number]
@@ -31,7 +31,10 @@ type Song = {
     }>
     master: { limiter: boolean, target_lufs: number, tape?: number, dust?: number, grit?: number, level_db?: number }
 }
-type Managed = { unit: AudioUnitBox, track: TrackBox, sound: string, fx: string, auto: string }
+/** `pads`: which pads a kit device holds (kitSignature), so a song that plays another pad gets a new device. */
+type Managed = { unit: AudioUnitBox, track: TrackBox, sound: string, pads: string, fx: string, auto: string }
+/** The pad note of every kit note, as the API chose it: [clip][note], null for a note the kit does not play. */
+type PadNotes = Array<Array<number | null>>
 
 const API: string = (import.meta as any).env?.VITE_UX_DAW_API ?? "https://daw-api.uxlabor.ee"
 const SESSION_KEY = "ux-daw-session"
@@ -63,6 +66,8 @@ export class Bridge {
     #instruments: Record<string, Instrument> = {}
     /** Per-section automation of the song being shown, worked out by the API (B5). */
     #automation: Record<string, TrackAutomation> = {}
+    /** Kit tracks' pad notes for the song being shown: the API picks layers and alternation (R2). */
+    #padNotes: Record<string, PadNotes> = {}
 
     constructor(service: StudioService) {
         this.#service = service
@@ -167,6 +172,7 @@ export class Bridge {
                 if (await this.#outdated() && this.#reloadForUpdate(m.song_id)) return
                 this.#learn(m.instruments)
                 this.#automation = m.automation ?? {}
+                this.#padNotes = m.pad_notes ?? {}
                 return this.#loadSong(m.song_id, m.version, m.song, m.reason)
             case "render":
                 return this.#render(m)
@@ -176,6 +182,7 @@ export class Bridge {
                     this.#badge.flash("Your AI changed the song at the same time; showing its version")
                     this.#learn(m.instruments)
                     this.#automation = m.automation ?? {}
+                    this.#padNotes = m.pad_notes ?? {}
                     await this.#loadSong(m.song_id, m.version, m.song, "ai")
                 }
                 return
@@ -235,7 +242,9 @@ export class Bridge {
         // Remove tracks the song no longer has, or whose sound changed.
         for (const [id, m] of [...this.#managed]) {
             const t = song.tracks.find(x => x.id === id)
-            if (!t || t.sound !== m.sound || !m.unit.isAttached()) {
+            const inst = t ? this.#instrument(t.sound) : null
+            const pads = inst?.kind === "kit" ? kitSignature(inst) : ""
+            if (!t || t.sound !== m.sound || pads !== m.pads || !m.unit.isAttached()) {
                 if (m.unit.isAttached()) api.deleteAudioUnit(m.unit)
                 this.#managed.delete(id)
             }
@@ -250,9 +259,7 @@ export class Bridge {
                 const factory = InstrumentFactories.Named[factoryName] as any
                 const attachment = inst.kind === "kit" ? kitAttachment(inst)
                     : inst.kind === "sampled" ? soundfontBox(project, inst.file)
-                    : basic.drums && inst.kind === "basic"
-                        ? DRUMS.map(d => ({note: d.note, uuid: UUID.parse(d.uuid), name: d.name, durationInSeconds: d.seconds, exclude: d.name === "hat" || d.name === "openhat"}))
-                        : undefined
+                    : undefined
                 const product = api.createInstrument(factory, {name: t.name, index, ...(attachment ? {attachment} : {})} as any)
                 const pads = () => [...(product.instrumentBox as any).samples.pointerHub.incoming()].map(({box}: any) => box)
                 // A texture loops while its note is held (Playfield gate mode 2 = Loop).
@@ -262,12 +269,8 @@ export class Bridge {
                     if (pan !== undefined) box.panning.setValue(pan)
                     applyPadSlice(inst, box)
                 }
-                if (inst.kind === "basic" && inst.pan && basic.drums) for (const box of pads()) {
-                    const pan = inst.pan[String(box.index.getValue())]
-                    if (pan !== undefined) box.panning.setValue(pan)
-                }
                 if (inst.kind === "synth") applySynth(product.instrumentBox, inst)
-                m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, fx: "", auto: ""}
+                m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, pads: inst.kind === "kit" ? kitSignature(inst) : "", fx: "", auto: ""}
                 this.#managed.set(t.id, m)
             }
             m.unit.volume.setValue(t.mix.volume_db)
@@ -277,14 +280,15 @@ export class Bridge {
             const adapter = project.boxAdapters.adapterFor(m.track, TrackBoxAdapter)
             for (const region of adapter.regions.collection.asArray()) region.box.delete()
             const inst = this.#instrument(t.sound)
-            const rr = new Map<string, number>() // hat and shaker alternation runs across the whole track
-            for (const clip of t.clips) {
+            const padNotes = this.#padNotes[t.id] ?? []
+            for (const [ci, clip] of t.clips.entries()) {
                 const section = song.sections.find(s => s.id === clip.section)
                 if (!section || clip.notes.length === 0) continue
                 const position = starts.get(section.id)! * BAR
                 const region: NoteRegionBox = api.createNoteRegion({trackBox: m.track, position, duration: section.bars * BAR, name: section.name})
-                for (const [beat, pitch, len, vel] of clip.notes) {
-                    const p = inst.kind === "kit" ? kitPadNote(inst, pitch, vel, rr) : pitch
+                for (const [ni, [beat, pitch, len, vel]] of clip.notes.entries()) {
+                    // A kit plays the pad note the API chose for this note (layer and alternation are server-side).
+                    const p = inst.kind === "kit" ? padNotes[ci]?.[ni] ?? null : pitch
                     if (p === null) continue
                     api.createNoteEvent({owner: region, position: Math.round(beat * Q), duration: Math.max(1, Math.round(len * Q)), pitch: p, velocity: vel / 127})
                 }
