@@ -102,6 +102,8 @@ export class Bridge {
             this.#badge.set("idle", "Not connected. Open the studio from your AI chat.")
             return
         }
+        // A background tab is slowed or paused by the browser: the API tells the AI so when a render times out (B4).
+        document.addEventListener("visibilitychange", () => this.#send({t: "state", ...this.#state()}))
         this.#connect()
     }
 
@@ -115,11 +117,13 @@ export class Bridge {
         ws.onopen = () => {
             this.#retry = 0
             this.#badge.set("ok", "Connected to your AI")
-            this.#send({t: "open", song_id: this.#wantSong ?? this.#songId})
+            this.#send({t: "open", song_id: this.#wantSong ?? this.#songId, ...this.#state()})
         }
         // One message at a time: a render must not start while the song it renders is still loading.
         ws.onmessage = ev => {
             const m = JSON.parse(String(ev.data))
+            // Tell the API at once that the render arrived: it may wait behind a song load or another render (B4).
+            if (m.t === "render") this.#send({t: "render_progress", req: m.req, phase: "queued", ...this.#state()})
             this.#queue = this.#queue.then(() => this.#onMessage(m)).catch(e => {
                 console.error("[ux-daw]", e)
                 this.#badge.set("error", `Bridge error: ${(e as Error).message}`)
@@ -136,6 +140,9 @@ export class Bridge {
             setTimeout(() => this.#connect(), wait)
         }
     }
+
+    /** What the API needs to know about this tab (B4): in the background or not; it reports render progress. */
+    #state() {return {hidden: document.hidden, progress: true}}
 
     #send(msg: unknown) {if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify(msg))}
 
@@ -402,8 +409,17 @@ export class Bridge {
         try {
             const start = (m.from_bar - 1) * BAR
             const section: MixdownSection = {type: "loop", key: "ux-daw", label: "ux-daw", start, end: start + m.bars * BAR, passes: 1, tail: false} as MixdownSection
+            // Progress to the API at most once a second, so a long render is not mistaken for a stalled one (B4).
+            const progress = new DefaultObservableValue(0)
+            let told = 0
+            const report = () => {
+                told = Date.now()
+                this.#send({t: "render_progress", req: m.req, phase: "rendering", ...this.#state()})
+            }
+            report()
+            const watch = progress.subscribe(() => {if (Date.now() - told >= 1000) report()})
             const audio = await OfflineEngineRenderer.renderSection(this.#project.copy(), Option.None, section,
-                new DefaultObservableValue(0), new AbortController().signal, 48000)
+                progress, new AbortController().signal, 48000).finally(() => watch.terminate())
             const seconds = audio.numberOfFrames / audio.sampleRate
             const wav = WavFile.encodeInts16(seconds > 40 ? halfRate(audio) : audio)
             const r = await fetch(`${API}/studio/clip?req=${m.req}`, {
