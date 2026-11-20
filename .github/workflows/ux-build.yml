@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the R1 check compares with upstream's history
 
       - uses: actions/setup-node@v5
         with:
@@ -59,7 +61,23 @@ jobs:
           VITE_UX_DAW_API: https://daw-api.uxlabor.ee
           # upstream's vite config switches to a CDN base path (/main/releases/<uuid>/) when CI=true; we serve from /
           CI: "false"
-        run: npx turbo build --filter=@opendaw/app-studio...
+        # The studio's dependencies with upstream's build, then the studio with our config: upstream's
+        # vite config plus the bridge plugin (vite.ux.config.ts). No openDAW source file is edited (R1).
+        run: |
+          npx turbo build --filter=@opendaw/app-studio^...
+          cd packages/app/studio
+          npx --no-install tsc
+          npx --no-install vite build -c vite.ux.config.ts
+
+      - name: No openDAW file edited (R1)
+        run: |
+          git fetch -q https://github.com/andremichelle/openDAW.git main
+          BASE=$(git merge-base HEAD FETCH_HEAD)
+          CHANGED=$(git diff --name-only "$BASE" HEAD -- . ':!packages/app/studio/src/ux' ':!packages/app/studio/vite.ux.config.ts' ':!.github')
+          if [ -n "$CHANGED" ]; then echo "openDAW files edited:"; echo "$CHANGED"; exit 1; fi
+
+      - name: The bridge is in the build
+        run: grep -l "uxDawBridge" packages/app/studio/dist/*.js >/dev/null || { echo "the bridge is not in the build"; exit 1; }
 
       - name: Check the engine is in the build
         run: |

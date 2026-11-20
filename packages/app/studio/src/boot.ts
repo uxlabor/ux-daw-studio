@@ -8,9 +8,6 @@ if (localStorage.getItem("opendaw-suppress-unload-guard") !== null) {
 import {App} from "@/ui/App.tsx"
 import {isDefined, panic, Progress, RuntimeNotification, RuntimeNotifier, UUID} from "@opendaw/lib-std"
 import {StudioService} from "@/service/StudioService"
-import {installBridge} from "@/ux/bridge"
-import {drumName, drumSample, uxSample, uxSampleName} from "@/ux/sounds"
-import {uxSoundfont} from "@/ux/patches"
 import {SampleMetaData, SoundfontMetaData} from "@opendaw/studio-adapters"
 import {Dialogs} from "@/ui/components/dialogs.tsx"
 import {installCursors} from "@/ui/Cursors.ts"
@@ -124,33 +121,12 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
     })
     WclapCatalog.get().tree().finally()
     const chainedSampleProvider = new ChainedSampleProvider({
-        fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[AudioData, SampleMetaData]> => {
-            // ux-daw: our synthesized drum samples never leave the browser.
-            const drum = drumSample(uuid)
-            if (drum !== null) {
-                return [drum, {name: drumName(uuid), bpm: 120, duration: drum.numberOfFrames / drum.sampleRate,
-                    sample_rate: drum.sampleRate, origin: "openDAW"}]
-            }
-            const ours = uxSample(uuid)
-            if (ours !== null) {
-                const data = await ours
-                return [data, {name: uxSampleName(uuid), bpm: 120, duration: data.numberOfFrames / data.sampleRate,
-                    sample_rate: data.sampleRate, origin: "openDAW"}]
-            }
-            return OpenSampleAPI.get().load(uuid, progress)
-        }
+        fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[AudioData, SampleMetaData]> =>
+            OpenSampleAPI.get().load(uuid, progress)
     })
     const chainedSoundfontProvider = new ChainedSoundfontProvider({
-        fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[ArrayBuffer, SoundfontMetaData]> => {
-            // ux-daw: our lo-fi patches, built from CC0 samples (VCSL), served by this site.
-            const ours = uxSoundfont(uuid)
-            if (ours !== null) {
-                const data = await ours.data
-                return [data, {name: ours.file.replace(/\.sf2$/, ""), size: data.byteLength, url: `/ux/patches/${ours.file}`,
-                    license: "CC0 1.0 (VCSL samples)", origin: "openDAW"}]
-            }
-            return OpenSoundfontAPI.get().load(uuid, progress)
-        }
+        fetch: async (uuid: UUID.Bytes, progress: Progress.Handler): Promise<[ArrayBuffer, SoundfontMetaData]> =>
+            OpenSoundfontAPI.get().load(uuid, progress)
     })
     const chainedWclapProvider = new ChainedWclapProvider()
     WclapStorage.installRemote(id => WclapCatalog.get().load(id)
@@ -166,7 +142,6 @@ export const boot = async ({workersUrl, workletsUrl, wasmProcessorUrl, wasmOffli
         sampleManager, soundfontManager, chainedSampleProvider, chainedSoundfontProvider, chainedWclapProvider,
         cloudAuthManager, buildInfo)
     StudioShortcutManager.install(service)
-    installBridge(service)
     if (isDefined(context.playbackStats)) {
         new BufferUnderrunDetector(context.playbackStats, service.engine)
     }

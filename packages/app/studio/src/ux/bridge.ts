@@ -6,14 +6,16 @@
 import {DefaultObservableValue, isDefined, Option, UUID} from "@opendaw/lib-std"
 import {Browser} from "@opendaw/lib-dom"
 import {AudioData, PPQN, WavFile} from "@opendaw/lib-dsp"
-import {AudioUnitBox, NoteRegionBox, SoundfontFileBox, TrackBox} from "@opendaw/studio-boxes"
+import {AudioUnitBox, NoteRegionBox, TrackBox} from "@opendaw/studio-boxes"
 import {InstrumentFactories, TrackBoxAdapter} from "@opendaw/studio-adapters"
 import {MixdownSection, OfflineEngineRenderer, Project} from "@opendaw/studio-core"
 import {StudioService} from "@/service/StudioService"
-import {DRUMS, kitAttachment, kitGmOf, kitPadNote, PAD_PAN, padRole, SOUNDS, TEXTURE_PAD_NOTE, textureAttachment} from "./sounds"
+import {DRUMS, SOUNDS} from "./sounds"
 import {BridgeBadge} from "./badge"
-import {PATCHES, sf2Uuid} from "./patches"
 import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, trackSignature} from "./chain"
+import {
+    applySynth, attachProviders, type Instrument, isTexture, kitAttachment, kitGmOf, kitPadNote, padPan, registerAssets, soundfontBox
+} from "./instruments"
 
 type Note = [number, number, number, number]
 type Song = {
@@ -55,8 +57,21 @@ export class Bridge {
     #wantSong: string | null = null
     #masterSig: string | null = null
     #queue: Promise<void> = Promise.resolve()
+    /** What each sound is made of, as the API sent it (patches, kits and trims are server data). */
+    #instruments: Record<string, Instrument> = {}
 
-    constructor(service: StudioService) {this.#service = service}
+    constructor(service: StudioService) {
+        this.#service = service
+        attachProviders(service)
+    }
+
+    #learn(instruments: Record<string, Instrument> | undefined) {
+        if (!instruments) return
+        registerAssets(instruments)
+        this.#instruments = {...this.#instruments, ...instruments}
+    }
+
+    #instrument(sound: string): Instrument {return this.#instruments[sound] ?? {kind: "basic"}}
 
     async start() {
         try {localStorage.setItem("opendaw-suppress-unload-guard", "true")} catch {}
@@ -146,6 +161,7 @@ export class Bridge {
         switch (m.t) {
             case "song":
                 if (await this.#outdated() && this.#reloadForUpdate(m.song_id)) return
+                this.#learn(m.instruments)
                 return this.#loadSong(m.song_id, m.version, m.song, m.reason)
             case "render":
                 return this.#render(m)
@@ -153,6 +169,7 @@ export class Bridge {
                 if (m.ok) this.#version = m.version
                 else if (m.reason === "stale" && m.song) {
                     this.#badge.flash("Your AI changed the song at the same time; showing its version")
+                    this.#learn(m.instruments)
                     await this.#loadSong(m.song_id, m.version, m.song, "ai")
                 }
                 return
@@ -220,21 +237,29 @@ export class Bridge {
         song.tracks.forEach((t, index) => {
             let m = this.#managed.get(t.id)
             if (!m) {
-                const def = SOUNDS[t.sound] ?? SOUNDS["pad/warm"]
-                const factory = InstrumentFactories.Named[def.factory] as any
-                const attachment = def.drums
-                    ? DRUMS.map(d => ({note: d.note, uuid: UUID.parse(d.uuid), name: d.name, durationInSeconds: d.seconds, exclude: d.name === "hat" || d.name === "openhat"}))
-                    : def.kit ? kitAttachment(def.kit) : def.texture ? textureAttachment(def.texture)
-                    : patchAttachment(project, def.patch)
+                const inst = this.#instrument(t.sound)
+                const basic = SOUNDS[t.sound] ?? SOUNDS["pad/warm"]
+                const factoryName = inst.kind === "synth" ? "Vaporisateur" : inst.kind === "sampled" ? "Soundfont"
+                    : inst.kind === "kit" ? "Playfield" : basic.factory
+                const factory = InstrumentFactories.Named[factoryName] as any
+                const attachment = inst.kind === "kit" ? kitAttachment(inst)
+                    : inst.kind === "sampled" ? soundfontBox(project, inst.file)
+                    : basic.drums && inst.kind === "basic"
+                        ? DRUMS.map(d => ({note: d.note, uuid: UUID.parse(d.uuid), name: d.name, durationInSeconds: d.seconds, exclude: d.name === "hat" || d.name === "openhat"}))
+                        : undefined
                 const product = api.createInstrument(factory, {name: t.name, index, ...(attachment ? {attachment} : {})} as any)
+                const pads = () => [...(product.instrumentBox as any).samples.pointerHub.incoming()].map(({box}: any) => box)
                 // A texture loops while its note is held (Playfield gate mode 2 = Loop).
-                if (def.texture) for (const {box} of (product.instrumentBox as any).samples.pointerHub.incoming()) (box as any).gate.setValue(2)
-                if (def.kit || def.drums) for (const {box} of (product.instrumentBox as any).samples.pointerHub.incoming()) {
-                    const role = padRole(def.kit, (box as any).index.getValue())
-                    if (role && PAD_PAN[role] !== undefined) (box as any).panning.setValue(PAD_PAN[role])
+                if (inst.kind === "kit" && isTexture(inst)) for (const box of pads()) box.gate.setValue(2)
+                if (inst.kind === "kit") for (const box of pads()) {
+                    const pan = padPan(inst, box.index.getValue())
+                    if (pan !== undefined) box.panning.setValue(pan)
                 }
-                const patch = def.patch ? PATCHES[def.patch] : undefined
-                if (patch?.kind === "synth") patch.set(product.instrumentBox)
+                if (inst.kind === "basic" && inst.pan && basic.drums) for (const box of pads()) {
+                    const pan = inst.pan[String(box.index.getValue())]
+                    if (pan !== undefined) box.panning.setValue(pan)
+                }
+                if (inst.kind === "synth") applySynth(product.instrumentBox, inst)
                 m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, fx: ""}
                 this.#managed.set(t.id, m)
             }
@@ -244,7 +269,7 @@ export class Bridge {
             // Notes: replace every region on this track with one region per section that has notes.
             const adapter = project.boxAdapters.adapterFor(m.track, TrackBoxAdapter)
             for (const region of adapter.regions.collection.asArray()) region.box.delete()
-            const def = SOUNDS[t.sound] ?? SOUNDS["pad/warm"]
+            const inst = this.#instrument(t.sound)
             const rr = new Map<string, number>() // hat and shaker alternation runs across the whole track
             for (const clip of t.clips) {
                 const section = song.sections.find(s => s.id === clip.section)
@@ -252,7 +277,7 @@ export class Bridge {
                 const position = starts.get(section.id)! * BAR
                 const region: NoteRegionBox = api.createNoteRegion({trackBox: m.track, position, duration: section.bars * BAR, name: section.name})
                 for (const [beat, pitch, len, vel] of clip.notes) {
-                    const p = def.kit ? kitPadNote(def.kit, pitch, vel, rr) : def.texture ? TEXTURE_PAD_NOTE : pitch
+                    const p = inst.kind === "kit" ? kitPadNote(inst, pitch, vel, rr) : pitch
                     if (p === null) continue
                     api.createNoteEvent({owner: region, position: Math.round(beat * Q), duration: Math.max(1, Math.round(len * Q)), pitch: p, velocity: vel / 127})
                 }
@@ -263,9 +288,11 @@ export class Bridge {
         const duckSource = drums ? this.#managed.get(drums.id)?.unit ?? null : null
         for (const t of song.tracks) {
             const m = this.#managed.get(t.id)!
-            const sig = trackSignature(t.effects, {duckSource, trim: trimOf(t.sound)})
+            const inst = this.#instrument(t.sound)
+            const trim = inst.kind === "synth" || inst.kind === "sampled" ? inst.trim_db : 0
+            const sig = trackSignature(t.effects, {duckSource, trim})
             if (m.fx !== sig) {
-                buildTrackChain(project, m.unit, t.effects, {duckSource, trim: trimOf(t.sound)})
+                buildTrackChain(project, m.unit, t.effects, {duckSource, trim})
                 m.fx = sig
             }
         }
@@ -311,7 +338,7 @@ export class Bridge {
         })
         for (const t of song.tracks) {
             const m = this.#managed.get(t.id)!
-            const def = SOUNDS[t.sound] ?? SOUNDS["pad/warm"]
+            const inst = this.#instrument(t.sound)
             t.mix = {
                 volume_db: Math.round(m.unit.volume.getValue() * 10) / 10,
                 pan: Math.round(m.unit.panning.getValue() * 100) / 100,
@@ -329,7 +356,7 @@ export class Bridge {
                         const sec = starts.find(s => absBeat >= s.from && absBeat < s.to)
                         if (!sec) continue
                         const list = bySection.get(sec.id) ?? []
-                        const pitch = def.kit ? kitGmOf(def.kit, ev.pitch) : ev.pitch
+                        const pitch = inst.kind === "kit" ? kitGmOf(inst, ev.pitch) : ev.pitch
                         if (pitch === null) continue
                         list.push([Math.round((absBeat - sec.from) * 1000) / 1000, pitch, Math.round(ev.duration / Q * 1000) / 1000,
                             Math.max(1, Math.min(127, Math.round(ev.velocity * 127)))])
@@ -392,18 +419,3 @@ export const installBridge = (service: StudioService) => {
     bridge.start().catch(e => console.error("[ux-daw] start", e))
 }
 
-/** A sampled patch's SoundFont file box (the soundfont provider in boot.ts serves our files), or nothing. */
-function patchAttachment(project: Project, id: string | undefined): SoundfontFileBox | undefined {
-    const patch = id ? PATCHES[id] : undefined
-    if (patch?.kind !== "sf2") return undefined
-    const uuid = UUID.parse(sf2Uuid(patch.file))
-    const existing = project.boxGraph.findBox(uuid)
-    if (existing.nonEmpty()) return existing.unwrap() as SoundfontFileBox
-    return SoundfontFileBox.create(project.boxGraph, uuid, box => box.fileName.setValue(patch.file))
-}
-
-/** The level match of a patch in dB, applied as a gain at the head of the track chain (the fader stays the user's). */
-function trimOf(sound: string): number {
-    const id = SOUNDS[sound]?.patch
-    return id ? PATCHES[id]?.trim ?? 0 : 0
-}
