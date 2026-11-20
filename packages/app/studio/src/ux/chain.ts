@@ -82,14 +82,16 @@ const sampler = (project: Project, field: any, amount: number, label: string) =>
 
 // ---------- track chain ----------
 
-/** duckSource: the drums unit for the duck sidechain; trim: the patch level match in dB (WP4). */
-export type TrackChainContext = { duckSource: AudioUnitBox | null, trim?: number }
+/** duckSource: the drums unit for the duck sidechain; trim: the patch level match in dB (WP4);
+ * sectionFilter: a low-pass at the end of the chain whose cutoff the per-section automation moves (B5). */
+export type TrackChainContext = { duckSource: AudioUnitBox | null, trim?: number, sectionFilter?: boolean }
 
 /** A string that changes whenever the built chain would change. */
 export const trackSignature = (effects: ReadonlyArray<Fx>, ctx: TrackChainContext) =>
     JSON.stringify([...effects].sort((a, b) => a.type.localeCompare(b.type)).map(e => [e.type, r3(e.amount)]))
     + (amountOf(effects, "duck") > 0 && ctx.duckSource ? UUID.toString(ctx.duckSource.address.uuid) : "")
     + (ctx.trim ? `|trim${r3(ctx.trim)}` : "")
+    + (ctx.sectionFilter ? "|sections" : "")
 
 export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: ReadonlyArray<Fx>, ctx: TrackChainContext) {
     const field = unit.audioEffects
@@ -151,6 +153,24 @@ export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: R
         v.wet.setValue(-20 + 18 * reverb)
         v.dry.setValue(0)
     }
+    if (ctx.sectionFilter) {
+        // Last, so a filtered section sounds as if from the next room, reverb and all. Open (20 kHz) until automated.
+        const eq = insert<RevampDeviceBox>(project, field, EffectFactories.AudioNamed.Revamp, SECTION_FILTER)
+        for (const band of [eq.highPass, eq.lowShelf, eq.lowBell, eq.midBell, eq.highBell, eq.highShelf] as any[]) band.enabled.setValue(false)
+        eq.lowPass.enabled.setValue(true)
+        eq.lowPass.frequency.setValue(20000)
+        eq.lowPass.order.setValue(1)
+        eq.lowPass.q.setValue(Math.SQRT1_2)
+    }
+}
+
+const SECTION_FILTER = "section filter"
+
+/** The cutoff field of a track's section low-pass, or null when its chain has none. */
+export function sectionFilterFrequency(unit: AudioUnitBox): any | null {
+    const box = (IndexedBox.collectIndexedBoxes(unit.audioEffects as any) as ReadonlyArray<any>)
+        .find(b => b instanceof RevampDeviceBox && b.label.getValue() === TAG + SECTION_FILTER) as RevampDeviceBox | undefined
+    return box ? box.lowPass.frequency : null
 }
 
 type Channel = { hp: number, lp: number, sat: number, wobble: number, chorus: number, duck: number }

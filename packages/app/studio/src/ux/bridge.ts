@@ -13,7 +13,8 @@ import {StudioService} from "@/service/StudioService"
 import {DRUMS, SOUNDS} from "./sounds"
 import {BridgeBadge} from "./badge"
 import {mountAbout} from "./about"
-import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, trackSignature} from "./chain"
+import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, sectionFilterFrequency, trackSignature} from "./chain"
+import {automationSignature, clearAutomation, type TrackAutomation, writeAutomation} from "./automation"
 import {
     applyPadSlice, applySynth, attachProviders, type Instrument, isTexture, kitAttachment, kitGmOf, kitPadNote, padPan, registerAssets, soundfontBox
 } from "./instruments"
@@ -30,7 +31,7 @@ type Song = {
     }>
     master: { limiter: boolean, target_lufs: number, tape?: number, dust?: number, grit?: number, level_db?: number }
 }
-type Managed = { unit: AudioUnitBox, track: TrackBox, sound: string, fx: string }
+type Managed = { unit: AudioUnitBox, track: TrackBox, sound: string, fx: string, auto: string }
 
 const API: string = (import.meta as any).env?.VITE_UX_DAW_API ?? "https://daw-api.uxlabor.ee"
 const SESSION_KEY = "ux-daw-session"
@@ -60,6 +61,8 @@ export class Bridge {
     #queue: Promise<void> = Promise.resolve()
     /** What each sound is made of, as the API sent it (patches, kits and trims are server data). */
     #instruments: Record<string, Instrument> = {}
+    /** Per-section automation of the song being shown, worked out by the API (B5). */
+    #automation: Record<string, TrackAutomation> = {}
 
     constructor(service: StudioService) {
         this.#service = service
@@ -163,6 +166,7 @@ export class Bridge {
             case "song":
                 if (await this.#outdated() && this.#reloadForUpdate(m.song_id)) return
                 this.#learn(m.instruments)
+                this.#automation = m.automation ?? {}
                 return this.#loadSong(m.song_id, m.version, m.song, m.reason)
             case "render":
                 return this.#render(m)
@@ -171,6 +175,7 @@ export class Bridge {
                 else if (m.reason === "stale" && m.song) {
                     this.#badge.flash("Your AI changed the song at the same time; showing its version")
                     this.#learn(m.instruments)
+                    this.#automation = m.automation ?? {}
                     await this.#loadSong(m.song_id, m.version, m.song, "ai")
                 }
                 return
@@ -262,7 +267,7 @@ export class Bridge {
                     if (pan !== undefined) box.panning.setValue(pan)
                 }
                 if (inst.kind === "synth") applySynth(product.instrumentBox, inst)
-                m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, fx: ""}
+                m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, fx: "", auto: ""}
                 this.#managed.set(t.id, m)
             }
             m.unit.volume.setValue(t.mix.volume_db)
@@ -292,10 +297,20 @@ export class Bridge {
             const m = this.#managed.get(t.id)!
             const inst = this.#instrument(t.sound)
             const trim = inst.kind === "synth" || inst.kind === "sampled" ? inst.trim_db : 0
-            const sig = trackSignature(t.effects, {duckSource, trim})
+            const auto = this.#automation[t.id]
+            const ctx = {duckSource, trim, sectionFilter: !!auto?.lowpass}
+            const sig = trackSignature(t.effects, ctx)
+            const autoSig = automationSignature(auto) + `|${bar}`
             if (m.fx !== sig) {
-                buildTrackChain(project, m.unit, t.effects, {duckSource, trim})
+                // Our lanes point at devices in the chain: they go before it is rebuilt.
+                clearAutomation(project, m.unit)
+                buildTrackChain(project, m.unit, t.effects, ctx)
                 m.fx = sig
+                m.auto = ""
+            }
+            if (m.auto !== autoSig) {
+                writeAutomation(project, m.unit, auto, sectionFilterFrequency(m.unit), bar)
+                m.auto = autoSig
             }
         }
         const ms = masterSignature(song.master)
