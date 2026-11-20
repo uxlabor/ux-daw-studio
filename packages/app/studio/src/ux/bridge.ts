@@ -12,6 +12,7 @@ import {MixdownSection, OfflineEngineRenderer, Project} from "@opendaw/studio-co
 import {StudioService} from "@/service/StudioService"
 import {DRUMS, SOUNDS} from "./sounds"
 import {BridgeBadge} from "./badge"
+import {mountAbout} from "./about"
 import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, trackSignature} from "./chain"
 import {
     applySynth, attachProviders, type Instrument, isTexture, kitAttachment, kitGmOf, kitPadNote, padPan, registerAssets, soundfontBox
@@ -416,6 +417,7 @@ function halfRate(a: AudioData): AudioData {
 export const installBridge = (service: StudioService) => {
     const bridge = new Bridge(service);
     (window as any).uxDawBridge = bridge
+    mountAbout(API)
     bridge.start().catch(e => console.error("[ux-daw] start", e))
 }
 
