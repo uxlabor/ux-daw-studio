@@ -12,6 +12,9 @@ This modified version is under the same licence and comes with no warranty, to t
 <p>What we changed: a bridge that connects the studio to your AI, sound settings sent by our server, and a master chain.
 All of it lives in its own folder and our build adds it; no openDAW file is edited.</p>
 <p>Source code of exactly this studio, including our changes: <a href="${SOURCE}" target="_blank" rel="noopener">${SOURCE}</a>.</p>
+<p>Icons, as credited by openDAW: "Wave" and "Compress" by Gregor Cresnar, "futurism" by Martin Königsmann and "tape reel" by Evgeny Filatov,
+from the <a href="https://thenounproject.com" target="_blank" rel="noopener">Noun Project</a> ("Wave" and "Compress" under CC BY 3.0);
+"Waveforms" by Austin Andrews (<a href="https://github.com/Templarian/MaterialDesign" target="_blank" rel="noopener">Material Design Icons</a>).</p>
 <p>Sounds and grooves come from free sources: <a href="${api}/credits" target="_blank" rel="noopener">credits</a>.</p>
 `
 
