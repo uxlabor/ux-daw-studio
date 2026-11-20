@@ -28,7 +28,7 @@ type Song = {
         effects: Array<{ type: string, amount: number }>
         clips: Array<{ section: string, notes: Note[] }>
     }>
-    master: { limiter: boolean, target_lufs: number, tape?: number, dust?: number }
+    master: { limiter: boolean, target_lufs: number, tape?: number, dust?: number, grit?: number, level_db?: number }
 }
 type Managed = { unit: AudioUnitBox, track: TrackBox, sound: string, fx: string }
 

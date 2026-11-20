@@ -1,6 +1,6 @@
 // ux-daw sound chain: turns the song's effects, master and feel into openDAW devices (lo-fi stage, WP1 and WP3).
-// - Track: [Compressor] -> [UX Channel script: highpass, lowpass, saturation, wobble, chorus, duck] -> [Delay] -> [Dattorro Reverb]
-// - Master: Compressor (glue) -> UX Tape script (mono lows, wow/flutter, saturation, dust, roll-off) -> Maximizer -> trim
+// - Track: [Crusher + Revamp: crush] -> [Compressor] -> [UX Channel script: highpass, lowpass, saturation, wobble, chorus, duck] -> [Delay] -> [Dattorro Reverb]
+// - Master: Compressor (glue) -> [Crusher + Revamp: grit] -> UX Tape script (mono lows, wow/flutter, saturation, dust, roll-off) -> Maximizer -> trim
 // - Song: key on the key track, swing as a Zeitgeist on every instrument pointing at the project groove.
 // Our devices carry the label prefix "ux·" and are rebuilt only when their settings change.
 // The scripts are Werkstatt devices: our own DSP code with the settings baked in as constants (no knobs),
@@ -10,10 +10,12 @@ import {IndexedBox} from "@opendaw/lib-box"
 import {
     AudioUnitBox,
     CompressorDeviceBox,
+    CrusherDeviceBox,
     DattorroReverbDeviceBox,
     DelayDeviceBox,
     GrooveShuffleBox,
     MaximizerDeviceBox,
+    RevampDeviceBox,
     StereoToolDeviceBox,
     WerkstattDeviceBox,
     WerkstattSidechainBox,
@@ -23,7 +25,7 @@ import {EffectFactories, Project} from "@opendaw/studio-core"
 
 export type Fx = { type: string, amount: number }
 /** level_db: gain before the finish, set by the API's loudness matching (the studio only applies it). */
-export type Master = { limiter: boolean, target_lufs: number, tape?: number, dust?: number, level_db?: number }
+export type Master = { limiter: boolean, target_lufs: number, tape?: number, dust?: number, grit?: number, level_db?: number }
 
 const TAG = "ux·"
 const SCRIPT_UPDATE_BASE = 1
@@ -58,6 +60,26 @@ const werkstatt = (project: Project, field: any, label: string, code: string): W
     return box
 }
 
+// ---------- old-sampler colour (track crush, master grit): stock Crusher, then the stock EQ as the output filter ----------
+
+/** Crusher's crush for a sample-and-hold rate of nyquist * 0.3^amount (its rate is exponential, 20 Hz to nyquist, at 48 kHz). */
+const CRUSH_PER_AMOUNT = -Math.log(0.3) / Math.log(24000 / 20)
+
+const sampler = (project: Project, field: any, amount: number, label: string) => {
+    const a = Math.max(0, Math.min(1, amount))
+    const c = insert<CrusherDeviceBox>(project, field, EffectFactories.AudioNamed.Crusher, label)
+    c.crush.setValue(CRUSH_PER_AMOUNT * a)          // 0.5 -> about 13 kHz, 1 -> about 7 kHz
+    c.bits.setValue(Math.round(16 - 8 * a))         // 0.5 -> 12 bits, 1 -> 8 bits
+    c.boost.setValue(0)
+    c.mix.setValue(1)
+    const eq = insert<RevampDeviceBox>(project, field, EffectFactories.AudioNamed.Revamp, label + " filter")
+    for (const band of [eq.highPass, eq.lowShelf, eq.lowBell, eq.midBell, eq.highBell, eq.highShelf] as any[]) band.enabled.setValue(false)
+    eq.lowPass.enabled.setValue(true)
+    eq.lowPass.frequency.setValue(Math.round(20000 * Math.pow(0.3, 1.3 * a))) // 0.5 -> 9.1 kHz, 1 -> 4.2 kHz
+    eq.lowPass.order.setValue(0)
+    eq.lowPass.q.setValue(Math.SQRT1_2)
+}
+
 // ---------- track chain ----------
 
 /** duckSource: the drums unit for the duck sidechain; trim: the patch level match in dB (WP4). */
@@ -80,6 +102,8 @@ export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: R
         insert<StereoToolDeviceBox>(project, field, EffectFactories.AudioNamed.StereoTool, "patch level").volume.setValue(step)
         trim -= step
     }
+    const crush = amountOf(effects, "crush")
+    if (crush > 0) sampler(project, field, crush, "crush")
     const comp = amountOf(effects, "compressor")
     if (comp > 0) {
         const c = insert<CompressorDeviceBox>(project, field, EffectFactories.AudioNamed.Compressor, "compressor")
@@ -233,6 +257,7 @@ class Processor {
 
 export const masterSignature = (m: Master) =>
     JSON.stringify([m.limiter, m.target_lufs, r3(m.tape ?? 0), r3(m.dust ?? 0), r3(m.level_db ?? 0), LIMITER_AT_MINUS_14])
+    + (m.grit ? `|grit${r3(m.grit)}` : "")
 
 export function buildMaster(project: Project, m: Master) {
     const field = project.primaryAudioUnitBox.audioEffects
@@ -251,6 +276,7 @@ export function buildMaster(project: Project, m: Master) {
     glue.knee.setValue(6)
     glue.automakeup.setValue(false)
     glue.makeup.setValue(1)
+    if (m.grit) sampler(project, field, m.grit, "grit")
     werkstatt(project, field, "tape", tapeScript(m.tape ?? 0, m.dust ?? 0))
     if (m.limiter) {
         const lim = insert<MaximizerDeviceBox>(project, field, EffectFactories.AudioNamed.Maximizer, "limiter")
