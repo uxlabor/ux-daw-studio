@@ -22,7 +22,8 @@ import {
 import {EffectFactories, Project} from "@opendaw/studio-core"
 
 export type Fx = { type: string, amount: number }
-export type Master = { limiter: boolean, target_lufs: number, tape?: number, dust?: number }
+/** level_db: gain before the finish, set by the API's loudness matching (the studio only applies it). */
+export type Master = { limiter: boolean, target_lufs: number, tape?: number, dust?: number, level_db?: number }
 
 const TAG = "ux·"
 const SCRIPT_UPDATE_BASE = 1
@@ -230,7 +231,8 @@ class Processor {
 
 // ---------- master ----------
 
-export const masterSignature = (m: Master) => JSON.stringify([m.limiter, m.target_lufs, r3(m.tape ?? 0), r3(m.dust ?? 0), LIMITER_AT_MINUS_14])
+export const masterSignature = (m: Master) =>
+    JSON.stringify([m.limiter, m.target_lufs, r3(m.tape ?? 0), r3(m.dust ?? 0), r3(m.level_db ?? 0), LIMITER_AT_MINUS_14])
 
 export function buildMaster(project: Project, m: Master) {
     const field = project.primaryAudioUnitBox.audioEffects
@@ -240,6 +242,7 @@ export function buildMaster(project: Project, m: Master) {
         if (b instanceof MaximizerDeviceBox && b.label.getValue() === "Master Maximizer") b.delete()
     ;(IndexedBox.collectIndexedBoxes(field as any) as ReadonlyArray<any>).forEach((b, i) => b.index.setValue(i))
 
+    if (m.level_db) insert<StereoToolDeviceBox>(project, field, EffectFactories.AudioNamed.StereoTool, "level").volume.setValue(m.level_db)
     const glue = insert<CompressorDeviceBox>(project, field, EffectFactories.AudioNamed.Compressor, "glue")
     glue.threshold.setValue(-16)
     glue.ratio.setValue(2)
