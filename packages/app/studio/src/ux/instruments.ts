@@ -125,35 +125,37 @@ const fetchBytes = (a: AssetRef) => fetch(a.url).then(r => {
 })
 
 /**
- * Plugs our files into openDAW's sample and SoundFont providers with the public `attachPeer` hook (openDAW
- * asks its own catalogue first; our UUIDs are not in it, so it falls through to us). Our synthesized kit's
- * hits are made here and never leave the browser.
+ * Puts our files in front of openDAW's sample and SoundFont providers: the bridge wraps `fetch` on the live
+ * provider objects the studio hands it, so our UUIDs are answered first and everything else goes on to
+ * openDAW's own path unchanged. (openDAW's catalogue CDN refuses this origin and its index fetch retries
+ * forever, so a fall-through peer after it is never reached.) Our synthesized kit's hits are made here.
  */
 export function attachProviders(service: StudioService) {
-    service.chainedSampleProvider.attachPeer({
-        fetch: async (uuid: UUID.Bytes, _progress: Progress.Handler) => {
-            const id = UUID.toString(uuid)
-            const drum = drumSample(uuid)
-            if (drum !== null) return [drum, meta(drumName(uuid), drum)] as any
-            const a = assets.get(id)
-            if (!a) throw new Error(`sample ${id} not found`)
-            let p = sampleCache.get(id)
-            if (!p) sampleCache.set(id, p = fetchBytes(a).then(decodeWav16))
-            const data = await p
-            return [data, meta(a.name, data)] as any
-        }
-    })
-    service.chainedSoundfontProvider.attachPeer({
-        fetch: async (uuid: UUID.Bytes, _progress: Progress.Handler) => {
-            const id = UUID.toString(uuid)
-            const a = assets.get(id)
-            if (!a) throw new Error(`soundfont ${id} not found`)
-            let p = sf2Cache.get(id)
-            if (!p) sf2Cache.set(id, p = fetchBytes(a))
-            const data = await p
-            return [data, {name: a.name, size: data.byteLength, url: "", license: "see the studio's credits", origin: "openDAW"}] as any
-        }
-    })
+    const sample = (uuid: UUID.Bytes): Promise<unknown> | null => {
+        const id = UUID.toString(uuid)
+        const drum = drumSample(uuid)
+        if (drum !== null) return Promise.resolve([drum, meta(drumName(uuid), drum)])
+        const a = assets.get(id)
+        if (!a) return null
+        let p = sampleCache.get(id)
+        if (!p) sampleCache.set(id, p = fetchBytes(a).then(decodeWav16))
+        return p.then(data => [data, meta(a.name, data)])
+    }
+    const soundfont = (uuid: UUID.Bytes): Promise<unknown> | null => {
+        const id = UUID.toString(uuid)
+        const a = assets.get(id)
+        if (!a) return null
+        let p = sf2Cache.get(id)
+        if (!p) sf2Cache.set(id, p = fetchBytes(a))
+        return p.then(data => [data, {name: a.name, size: data.byteLength, url: "", license: "see the studio's credits", origin: "openDAW"}])
+    }
+    oursFirst(service.chainedSampleProvider, sample)
+    oursFirst(service.chainedSoundfontProvider, soundfont)
+}
+
+function oursFirst(provider: any, ours: (uuid: UUID.Bytes) => Promise<unknown> | null) {
+    const theirs = provider.fetch.bind(provider)
+    provider.fetch = (uuid: UUID.Bytes, progress: Progress.Handler) => ours(uuid) ?? theirs(uuid, progress)
 }
 
 const meta = (name: string, d: AudioData) =>
