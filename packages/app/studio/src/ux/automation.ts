@@ -8,8 +8,10 @@ import {AudioUnitBoxAdapter, InterpolationFieldAdapter, RevampDeviceBoxAdapter, 
 import {AudioUnitBox, ValueEventBox, ValueEventCollectionBox, ValueRegionBox} from "@opendaw/studio-boxes"
 import {Project} from "@opendaw/studio-core"
 
-/** What the API sends per track: [beat from the song start, value]. */
-export type TrackAutomation = { volume?: Array<[number, number]>, lowpass?: Array<[number, number]> }
+/** What the API sends per track: [beat from the song start, value], held to the next point; a third element 1
+ * ramps straight to the next point instead (the pump, synthwave and house S3). */
+export type AutoPoint = [number, number] | [number, number, 1]
+export type TrackAutomation = { volume?: Array<AutoPoint>, lowpass?: Array<AutoPoint> }
 
 const LABEL = "ux·sections"
 
@@ -35,7 +37,7 @@ export function writeAutomation(project: Project, unit: AudioUnitBox, a: TrackAu
     clearAutomation(project, unit)
     if (!a) return
     const unitAdapter = project.boxAdapters.adapterFor(unit, AudioUnitBoxAdapter)
-    const lanes: Array<[any, Array<[number, number]>]> = []
+    const lanes: Array<[any, Array<AutoPoint>]> = []
     if (a.volume?.length) lanes.push([unit.volume, a.volume])
     if (a.lowpass?.length && filterFrequency) {
         // A device inserted in this transaction has no parameter adapters until its own adapter exists.
@@ -63,12 +65,12 @@ export function writeAutomation(project: Project, unit: AudioUnitBox, a: TrackAu
             box.events.refer(events.owners)
             box.regions.refer(trackBox.regions)
         })
-        for (const [beat, value] of points) {
+        for (const [beat, value, ramp] of points) {
             ValueEventBox.create(project.boxGraph, UUID.generate(), box => {
                 box.position.setValue(Math.round(beat * PPQN.Quarter))
                 box.value.setValue(mapping.x(mapping.clamp(value)))
                 box.events.refer(events.events)
-                InterpolationFieldAdapter.write(box.interpolation, Interpolation.None)
+                InterpolationFieldAdapter.write(box.interpolation, ramp === 1 ? Interpolation.Linear : Interpolation.None)
             })
         }
     }

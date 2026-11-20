@@ -23,7 +23,7 @@ import {
 } from "@opendaw/studio-boxes"
 import {EffectFactories, Project} from "@opendaw/studio-core"
 
-export type Fx = { type: string, amount: number }
+export type Fx = { type: string, amount: number, shape?: string, source?: string }
 /** level_db: gain before the finish, set by the API's loudness matching (the studio only applies it). */
 export type Master = { limiter: boolean, target_lufs: number, tape?: number, dust?: number, grit?: number, level_db?: number }
 
@@ -34,6 +34,11 @@ const SCRIPT_UPDATE_BASE = 1
 export const LIMITER_AT_MINUS_14 = -6
 
 const amountOf = (effects: ReadonlyArray<Fx>, type: string) => effects.find(e => e.type === type)?.amount ?? 0
+/** The sidechain duck: a duck with a shape or a source is the pump, which the API sends as volume automation. */
+const sidechainDuck = (effects: ReadonlyArray<Fx>) => {
+    const d = effects.find(e => e.type === "duck")
+    return d && !d.shape && !d.source ? d.amount : 0
+}
 const r3 = (x: number) => Math.round(x * 1000) / 1000
 const hash = (s: string) => {
     let h = 2166136261
@@ -89,7 +94,7 @@ export type TrackChainContext = { duckSource: AudioUnitBox | null, trim?: number
 /** A string that changes whenever the built chain would change. */
 export const trackSignature = (effects: ReadonlyArray<Fx>, ctx: TrackChainContext) =>
     JSON.stringify([...effects].sort((a, b) => a.type.localeCompare(b.type)).map(e => [e.type, r3(e.amount)]))
-    + (amountOf(effects, "duck") > 0 && ctx.duckSource ? UUID.toString(ctx.duckSource.address.uuid) : "")
+    + (sidechainDuck(effects) > 0 && ctx.duckSource ? UUID.toString(ctx.duckSource.address.uuid) : "")
     + (ctx.trim ? `|trim${r3(ctx.trim)}` : "")
     + (ctx.sectionFilter ? "|sections" : "")
 
@@ -122,7 +127,7 @@ export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: R
         sat: amountOf(effects, "saturation"),
         wobble: amountOf(effects, "wobble"),
         chorus: amountOf(effects, "chorus"),
-        duck: ctx.duckSource && ctx.duckSource !== unit ? amountOf(effects, "duck") : 0
+        duck: ctx.duckSource && ctx.duckSource !== unit ? sidechainDuck(effects) : 0
     }
     if (ch.hp + ch.lp + ch.sat + ch.wobble + ch.chorus + ch.duck > 0) {
         const w = werkstatt(project, field, "channel", channelScript(ch))
