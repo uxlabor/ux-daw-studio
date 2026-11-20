@@ -25,6 +25,8 @@ export type SampledInstrument = { kind: "sampled", trim_db: number, file: AssetR
 export type Pad = {
     note: number, role: string, gm: number, velocity: [number, number], rr: number
     pan: number, seconds: number, choke: boolean, file: AssetRef
+    /** A slice of the file (chops): fractions of its length, pitch in cents, gated by the note, level in dB. */
+    start?: number, end?: number, pitch_ct?: number, gated?: boolean, volume_db?: number
 }
 export type KitInstrument = { kind: "kit", pads: Pad[], fallback: Record<string, string> }
 export type BasicInstrument = { kind: "basic", pan?: Record<string, number> }
@@ -104,6 +106,17 @@ export function kitPadNote(kit: KitInstrument, gm: number, velocity: number, cou
 export const kitGmOf = (kit: KitInstrument, note: number): number | null => kit.pads.find(p => p.note === note)?.gm ?? null
 
 export const padPan = (kit: KitInstrument, note: number): number | undefined => kit.pads.find(p => p.note === note)?.pan
+
+/** Applies a pad's slice settings, as the server sent them, to the sampler pad on that note. */
+export function applyPadSlice(kit: KitInstrument, box: any) {
+    const p = kit.pads.find(x => x.note === box.index.getValue())
+    if (!p) return
+    if (p.start !== undefined) box.sampleStart.setValue(p.start)
+    if (p.end !== undefined) box.sampleEnd.setValue(p.end)
+    if (p.pitch_ct !== undefined) box.pitch.setValue(p.pitch_ct)
+    if (p.gated) box.gate.setValue(1) // Playfield gate mode 1 = On: the note's length stops the slice
+    if (p.volume_db !== undefined) box.volume.setValue(p.volume_db)
+}
 
 // ---------- files: our samples and SoundFonts reach openDAW's loaders through its own provider hook ----------
 

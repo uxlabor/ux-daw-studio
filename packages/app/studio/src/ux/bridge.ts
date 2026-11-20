@@ -15,7 +15,7 @@ import {BridgeBadge} from "./badge"
 import {mountAbout} from "./about"
 import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, trackSignature} from "./chain"
 import {
-    applySynth, attachProviders, type Instrument, isTexture, kitAttachment, kitGmOf, kitPadNote, padPan, registerAssets, soundfontBox
+    applyPadSlice, applySynth, attachProviders, type Instrument, isTexture, kitAttachment, kitGmOf, kitPadNote, padPan, registerAssets, soundfontBox
 } from "./instruments"
 
 type Note = [number, number, number, number]
@@ -255,6 +255,7 @@ export class Bridge {
                 if (inst.kind === "kit") for (const box of pads()) {
                     const pan = padPan(inst, box.index.getValue())
                     if (pan !== undefined) box.panning.setValue(pan)
+                    applyPadSlice(inst, box)
                 }
                 if (inst.kind === "basic" && inst.pan && basic.drums) for (const box of pads()) {
                     const pan = inst.pan[String(box.index.getValue())]
