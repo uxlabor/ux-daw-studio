@@ -13,6 +13,7 @@ import {StudioService} from "@/service/StudioService"
 import {SOUNDS} from "./sounds"
 import {BridgeBadge} from "./badge"
 import {mountAbout} from "./about"
+import {PlayIn} from "./playin"
 import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, sectionFilterFrequency, trackSignature} from "./chain"
 import {automationSignature, clearAutomation, type TrackAutomation, writeAutomation} from "./automation"
 import {
@@ -68,10 +69,21 @@ export class Bridge {
     #automation: Record<string, TrackAutomation> = {}
     /** Kit tracks' pad notes for the song being shown: the API picks layers and alternation (R2). */
     #padNotes: Record<string, PadNotes> = {}
+    /** Play it in (O7): letter keys and MIDI play a track; a take becomes a studio edit. */
+    readonly #playIn: PlayIn
+    #editLabel: string | null = null
 
     constructor(service: StudioService) {
         this.#service = service
         attachProviders(service)
+        this.#playIn = new PlayIn({
+            project: () => this.#project,
+            song: () => this.#song,
+            unitOf: id => this.#managed.get(id),
+            instrument: sound => this.#instrument(sound),
+            labelNextEdit: label => {this.#editLabel = label},
+            flash: text => this.#badge.flash(text)
+        })
     }
 
     #learn(instruments: Record<string, Instrument> | undefined) {
@@ -217,11 +229,16 @@ export class Bridge {
                 onEndTransaction: (rolledBack: boolean) => {if (!rolledBack && !this.#applying) this.#scheduleReadback()}
             })
             this.#apply(song, false)
+            // The track selected in the studio (its device chain is open) is the one the play-in panel plays.
+            project.userEditingManager.audioUnit.catchupAndSubscribe(o => o.ifSome(v => {
+                if (v.box instanceof AudioUnitBox) this.#playIn.selectUnit(v.box)
+            }))
         } else {
             this.#apply(song, true)
         }
         this.#version = version
         this.#song = song
+        this.#playIn.songChanged()
         this.#badge.set("ok", reason === "ai" ? `Updated by your AI · ${song.title}` : `Connected · ${song.title}`)
         if (reason === "ai") this.#badge.flash("Your AI changed the song. Ctrl+Z undoes it.")
     }
@@ -394,9 +411,11 @@ export class Bridge {
             }
             t.clips = [...bySection].map(([section, notes]) => ({section, notes: notes.sort((a, b) => a[0] - b[0] || a[1] - b[1])}))
         }
+        const label = this.#editLabel
+        this.#editLabel = null
         if (JSON.stringify(song) === JSON.stringify(prev)) return
         this.#song = song
-        this.#send({t: "edited", song_id: this.#songId, base_version: this.#version, song})
+        this.#send({t: "edited", song_id: this.#songId, base_version: this.#version, song, ...(label ? {label} : {})})
         this.#badge.flash("Saved your edit. Your AI will see it.")
     }
 
