@@ -88,8 +88,12 @@ const sampler = (project: Project, field: any, amount: number, label: string) =>
 // ---------- track chain ----------
 
 /** duckSource: the drums unit for the duck sidechain; trim: the patch level match in dB (WP4);
- * sectionFilter: a low-pass at the end of the chain whose cutoff the per-section automation moves (B5). */
-export type TrackChainContext = { duckSource: AudioUnitBox | null, trim?: number, sectionFilter?: boolean }
+ * sectionFilter: a low-pass at the end of the chain whose cutoff the per-section automation moves (B5);
+ * sectionHighpass: a high-pass in the same filter for a highpass curve, spaceLane: a reverb even at amount 0
+ * for a space curve (S1); width: the API's stereo width above 150 Hz (S6). */
+export type TrackChainContext = {
+    duckSource: AudioUnitBox | null, trim?: number, sectionFilter?: boolean, sectionHighpass?: boolean, spaceLane?: boolean, width?: number
+}
 
 /** A string that changes whenever the built chain would change. */
 export const trackSignature = (effects: ReadonlyArray<Fx>, ctx: TrackChainContext) =>
@@ -97,6 +101,7 @@ export const trackSignature = (effects: ReadonlyArray<Fx>, ctx: TrackChainContex
     + (sidechainDuck(effects) > 0 && ctx.duckSource ? UUID.toString(ctx.duckSource.address.uuid) : "")
     + (ctx.trim ? `|trim${r3(ctx.trim)}` : "")
     + (ctx.sectionFilter ? "|sections" : "")
+    + (ctx.sectionHighpass ? "|hp" : "") + (ctx.spaceLane ? "|space" : "") + (ctx.width ? `|w${r3(ctx.width)}` : "")
 
 export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: ReadonlyArray<Fx>, ctx: TrackChainContext) {
     const field = unit.audioEffects
@@ -127,9 +132,10 @@ export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: R
         sat: amountOf(effects, "saturation"),
         wobble: amountOf(effects, "wobble"),
         chorus: amountOf(effects, "chorus"),
-        duck: ctx.duckSource && ctx.duckSource !== unit ? sidechainDuck(effects) : 0
+        duck: ctx.duckSource && ctx.duckSource !== unit ? sidechainDuck(effects) : 0,
+        width: r3(Math.max(0, Math.min(1, ctx.width ?? 0)))
     }
-    if (ch.hp + ch.lp + ch.sat + ch.wobble + ch.chorus + ch.duck > 0) {
+    if (ch.hp + ch.lp + ch.sat + ch.wobble + ch.chorus + ch.duck + ch.width > 0) {
         const w = werkstatt(project, field, "channel", channelScript(ch))
         if (ch.duck > 0 && ctx.duckSource) {
             WerkstattSidechainBox.create(project.boxGraph, UUID.generate(), (b: WerkstattSidechainBox) => {
@@ -149,7 +155,7 @@ export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: R
         d.dry.setValue(0)
     }
     const reverb = amountOf(effects, "reverb")
-    if (reverb > 0) {
+    if (reverb > 0 || ctx.spaceLane) {
         const v = insert<DattorroReverbDeviceBox>(project, field, EffectFactories.AudioNamed.DattorroReverb, "reverb")
         v.preDelay.setValue(18)
         v.decay.setValue(0.45 + 0.4 * reverb)
@@ -158,7 +164,7 @@ export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: R
         v.wet.setValue(-20 + 18 * reverb)
         v.dry.setValue(0)
     }
-    if (ctx.sectionFilter) {
+    if (ctx.sectionFilter || ctx.sectionHighpass) {
         // Last, so a filtered section sounds as if from the next room, reverb and all. Open (20 kHz) until automated.
         const eq = insert<RevampDeviceBox>(project, field, EffectFactories.AudioNamed.Revamp, SECTION_FILTER)
         for (const band of [eq.highPass, eq.lowShelf, eq.lowBell, eq.midBell, eq.highBell, eq.highShelf] as any[]) band.enabled.setValue(false)
@@ -166,6 +172,25 @@ export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: R
         eq.lowPass.frequency.setValue(20000)
         eq.lowPass.order.setValue(1)
         eq.lowPass.q.setValue(Math.SQRT1_2)
+        if (ctx.sectionHighpass) {
+            // Open (20 Hz) until automated (S1).
+            eq.highPass.enabled.setValue(true)
+            eq.highPass.frequency.setValue(20)
+            eq.highPass.order.setValue(1)
+            eq.highPass.q.setValue(Math.SQRT1_2)
+        }
+    }
+}
+
+/** The fields a track's lanes point at (S1): the section filter's cutoffs and our reverb's wet level. */
+export function laneFields(unit: AudioUnitBox): { lowpass: any | null, highpass: any | null, reverbWet: any | null } {
+    const boxes = IndexedBox.collectIndexedBoxes(unit.audioEffects as any) as ReadonlyArray<any>
+    const eq = boxes.find(b => b instanceof RevampDeviceBox && b.label.getValue() === TAG + SECTION_FILTER) as RevampDeviceBox | undefined
+    const verb = boxes.find(b => b instanceof DattorroReverbDeviceBox && b.label.getValue() === TAG + "reverb") as DattorroReverbDeviceBox | undefined
+    return {
+        lowpass: eq ? eq.lowPass.frequency : null,
+        highpass: eq && eq.highPass.enabled.getValue() ? eq.highPass.frequency : null,
+        reverbWet: verb ? verb.wet : null
     }
 }
 
@@ -178,7 +203,7 @@ export function sectionFilterFrequency(unit: AudioUnitBox): any | null {
     return box ? box.lowPass.frequency : null
 }
 
-type Channel = { hp: number, lp: number, sat: number, wobble: number, chorus: number, duck: number }
+type Channel = { hp: number, lp: number, sat: number, wobble: number, chorus: number, duck: number, width?: number }
 
 /** Biquad (RBJ) as script source, shared by both scripts. */
 const BIQUAD = `class Biquad {
@@ -219,7 +244,7 @@ class Processor {
         this.k1 = 0; this.k2 = 0; this.env = 0; this.peak = 0; this.g = 1
         this.kA = Math.exp(-2 * Math.PI * 120 / sampleRate)
         this.atk = 1 - Math.exp(-1 / (0.003 * sampleRate)); this.rel = 1 - Math.exp(-1 / (0.15 * sampleRate))
-        this.pDec = Math.exp(-Math.LN2 / (3 * sampleRate)); this.gS = 1 - Math.exp(-1 / (0.002 * sampleRate))
+        this.pDec = Math.exp(-Math.LN2 / (3 * sampleRate)); this.gS = 1 - Math.exp(-1 / (0.002 * sampleRate))${widthInit(c.width ?? 0)}
     }
     rnd() {this.seed = (this.seed * 1664525 + 1013904223) >>> 0; return this.seed / 4294967296}
     reset() {
@@ -259,7 +284,7 @@ class Processor {
                     r = r * (1 - m) + wr * m
                 }
             }
-            if (key) {
+${widthRun(c.width ?? 0)}            if (key) {
                 const k = (key[0][i] + key[1][i]) * 0.5
                 this.k1 = this.k1 * this.kA + (1 - this.kA) * k
                 this.k2 = this.k2 * this.kA + (1 - this.kA) * this.k1
@@ -278,13 +303,40 @@ class Processor {
 `
 }
 
+/**
+ * Width (S6): a side signal made from two short delays of the mid (7.1 and 11.3 ms), high-passed at 150 Hz and
+ * added as +side on the left and -side on the right. The mid is untouched, so the mono sum and the low end stay as
+ * they were. Empty at width 0, so the script of every track without width is the same text as before.
+ */
+const widthInit = (w: number) => w > 0 ? `
+        this.wid = ${r3(w)}; this.wb = new Float32Array(4096); this.ww = 0
+        this.wHp = [new Biquad("hp", 150, 0.707), new Biquad("hp", 150, 0.707)]` : ""
+const widthRun = (w: number) => w > 0 ? `            {
+                const m = (l + r) * 0.5, s = (l - r) * 0.5, w = this.ww
+                this.wb[w & 4095] = m; this.ww = w + 1
+                const d = tap(this.wb, w, 0.0071 * sampleRate) - tap(this.wb, w, 0.0113 * sampleRate)
+                const add = this.wHp[1].run(this.wHp[0].run(d)) * 0.8 * this.wid
+                l = m + s + add; r = m - s - add
+            }
+` : ""
+
 // ---------- master ----------
 
-export const masterSignature = (m: Master) =>
+export const masterSignature = (m: Master, filter: boolean = false) =>
     JSON.stringify([m.limiter, m.target_lufs, r3(m.tape ?? 0), r3(m.dust ?? 0), r3(m.level_db ?? 0), LIMITER_AT_MINUS_14])
-    + (m.grit ? `|grit${r3(m.grit)}` : "")
+    + (m.grit ? `|grit${r3(m.grit)}` : "") + (filter ? "|filter" : "")
 
-export function buildMaster(project: Project, m: Master) {
+const MASTER_FILTER = "master filter"
+
+/** The cutoff of the master low-pass (a master tone curve, S1), or null when the master has none. */
+export function masterFilterFrequency(project: Project): any | null {
+    const box = (IndexedBox.collectIndexedBoxes(project.primaryAudioUnitBox.audioEffects as any) as ReadonlyArray<any>)
+        .find(b => b instanceof RevampDeviceBox && b.label.getValue() === TAG + MASTER_FILTER) as RevampDeviceBox | undefined
+    return box ? box.lowPass.frequency : null
+}
+
+/** filter: a low-pass after the tape for the master's tone curve (S1); open until automated. */
+export function buildMaster(project: Project, m: Master, filter: boolean = false) {
     const field = project.primaryAudioUnitBox.audioEffects
     clearOurs(field)
     // openDAW's default master limiter: ours replaces it.
@@ -303,6 +355,14 @@ export function buildMaster(project: Project, m: Master) {
     glue.makeup.setValue(1)
     if (m.grit) sampler(project, field, m.grit, "grit")
     werkstatt(project, field, "tape", tapeScript(m.tape ?? 0, m.dust ?? 0))
+    if (filter) {
+        const eq = insert<RevampDeviceBox>(project, field, EffectFactories.AudioNamed.Revamp, MASTER_FILTER)
+        for (const band of [eq.highPass, eq.lowShelf, eq.lowBell, eq.midBell, eq.highBell, eq.highShelf] as any[]) band.enabled.setValue(false)
+        eq.lowPass.enabled.setValue(true)
+        eq.lowPass.frequency.setValue(20000)
+        eq.lowPass.order.setValue(1)
+        eq.lowPass.q.setValue(Math.SQRT1_2)
+    }
     if (m.limiter) {
         const lim = insert<MaximizerDeviceBox>(project, field, EffectFactories.AudioNamed.Maximizer, "limiter")
         lim.threshold.setValue(Math.max(-24, Math.min(0, LIMITER_AT_MINUS_14 - (m.target_lufs + 14))))

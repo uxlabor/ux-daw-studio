@@ -14,8 +14,8 @@ import {SOUNDS} from "./sounds"
 import {BridgeBadge} from "./badge"
 import {mountAbout} from "./about"
 import {PlayIn} from "./playin"
-import {applyKey, applySwing, buildMaster, buildTrackChain, masterSignature, sectionFilterFrequency, trackSignature} from "./chain"
-import {automationSignature, clearAutomation, type TrackAutomation, writeAutomation} from "./automation"
+import {applyKey, applySwing, buildMaster, buildTrackChain, laneFields, masterFilterFrequency, masterSignature, trackSignature} from "./chain"
+import {automationSignature, clearAutomation, type MasterAutomation, type TrackAutomation, writeAutomation} from "./automation"
 import {
     applyPadSlice, applySynth, attachProviders, type Instrument, isTexture, kitAttachment, kitGmOf, kitSignature, padPan, registerAssets, soundfontBox
 } from "./instruments"
@@ -67,6 +67,10 @@ export class Bridge {
     #instruments: Record<string, Instrument> = {}
     /** Per-section automation of the song being shown, worked out by the API (B5). */
     #automation: Record<string, TrackAutomation> = {}
+    /** The master's curves and every track's width (S1, S6), worked out by the API. */
+    #masterAutomation: MasterAutomation | null = null
+    #width: Record<string, number> = {}
+    #masterAutoSig = ""
     /** Kit tracks' pad notes for the song being shown: the API picks layers and alternation (R2). */
     #padNotes: Record<string, PadNotes> = {}
     /** Play it in (O7): letter keys and MIDI play a track; a take becomes a studio edit. */
@@ -191,6 +195,8 @@ export class Bridge {
                 if (await this.#outdated() && this.#reloadForUpdate(m.song_id)) return
                 this.#learn(m.instruments)
                 this.#automation = m.automation ?? {}
+                this.#masterAutomation = m.master_automation ?? null
+                this.#width = m.width ?? {}
                 this.#padNotes = m.pad_notes ?? {}
                 return this.#loadSong(m.song_id, m.version, m.song, m.reason)
             case "render":
@@ -201,6 +207,8 @@ export class Bridge {
                     this.#badge.flash("Your AI changed the song at the same time; showing its version")
                     this.#learn(m.instruments)
                     this.#automation = m.automation ?? {}
+                    this.#masterAutomation = m.master_automation ?? null
+                    this.#width = m.width ?? {}
                     this.#padNotes = m.pad_notes ?? {}
                     await this.#loadSong(m.song_id, m.version, m.song, "ai")
                 }
@@ -326,7 +334,7 @@ export class Bridge {
             const inst = this.#instrument(t.sound)
             const trim = inst.kind === "synth" || inst.kind === "sampled" ? inst.trim_db : 0
             const auto = this.#automation[t.id]
-            const ctx = {duckSource, trim, sectionFilter: !!auto?.lowpass}
+            const ctx = {duckSource, trim, sectionFilter: !!auto?.lowpass, sectionHighpass: !!auto?.highpass, spaceLane: !!auto?.reverb, width: this.#width[t.id] ?? 0}
             const sig = trackSignature(t.effects, ctx)
             const autoSig = automationSignature(auto) + `|${bar}`
             if (m.fx !== sig) {
@@ -337,14 +345,23 @@ export class Bridge {
                 m.auto = ""
             }
             if (m.auto !== autoSig) {
-                writeAutomation(project, m.unit, auto, sectionFilterFrequency(m.unit), bar)
+                writeAutomation(project, m.unit, auto, laneFields(m.unit), bar)
                 m.auto = autoSig
             }
         }
-        const ms = masterSignature(song.master)
+        const masterAuto = this.#masterAutomation
+        const ms = masterSignature(song.master, !!masterAuto?.lowpass)
+        const mas = automationSignature(masterAuto) + `|${bar}`
         if (this.#masterSig !== ms) {
-            buildMaster(project, song.master)
+            // Our master lanes point at the master filter: they go before the chain is rebuilt.
+            clearAutomation(project, project.primaryAudioUnitBox)
+            buildMaster(project, song.master, !!masterAuto?.lowpass)
             this.#masterSig = ms
+            this.#masterAutoSig = ""
+        }
+        if (this.#masterAutoSig !== mas) {
+            writeAutomation(project, project.primaryAudioUnitBox, masterAuto, {lowpass: masterFilterFrequency(project)}, bar)
+            this.#masterAutoSig = mas
         }
         applyKey(project, song.key)
         applySwing(project, song.tracks.flatMap(t => {
