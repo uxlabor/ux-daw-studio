@@ -1,6 +1,6 @@
 // ux-daw sound chain: turns the song's effects, master and feel into openDAW devices (lo-fi stage, WP1 and WP3).
-// - Track: [Crusher + Revamp: crush] -> [Compressor] -> [UX Channel script: highpass, lowpass, saturation, wobble, chorus, duck] -> [Delay] -> [Dattorro Reverb]
-// - Master: Compressor (glue) -> [Crusher + Revamp: grit] -> UX Tape script (mono lows, wow/flutter, saturation, dust, roll-off) -> Maximizer -> trim
+// - Track: [Crusher + Revamp: crush] -> [UX Compressor script] -> [UX Channel script: highpass, lowpass, saturation, wobble, chorus, duck] -> [Delay] -> [Dattorro Reverb]
+// - Master: UX Compressor script (glue) -> [Crusher + Revamp: grit] -> UX Tape script (mono lows, wow/flutter, saturation, dust, roll-off) -> Maximizer -> trim
 // - Song: key on the key track, swing as a Zeitgeist on every instrument pointing at the project groove.
 // Our devices carry the label prefix "ux·" and are rebuilt only when their settings change.
 // The scripts are Werkstatt devices: our own DSP code with the settings baked in as constants (no knobs),
@@ -9,7 +9,6 @@ import {UUID} from "@opendaw/lib-std"
 import {IndexedBox} from "@opendaw/lib-box"
 import {
     AudioUnitBox,
-    CompressorDeviceBox,
     CrusherDeviceBox,
     DattorroReverbDeviceBox,
     DelayDeviceBox,
@@ -22,6 +21,7 @@ import {
     ZeitgeistDeviceBox
 } from "@opendaw/studio-boxes"
 import {EffectFactories, Project} from "@opendaw/studio-core"
+import {compressorScript, GLUE, partCompressor} from "./compressor"
 
 export type Fx = { type: string, amount: number, shape?: string, source?: string }
 /** level_db: gain before the finish, set by the API's loudness matching (the studio only applies it). */
@@ -116,16 +116,9 @@ export function buildTrackChain(project: Project, unit: AudioUnitBox, effects: R
     }
     const crush = amountOf(effects, "crush")
     if (crush > 0) sampler(project, field, crush, "crush")
-    const comp = amountOf(effects, "compressor")
-    if (comp > 0) {
-        const c = insert<CompressorDeviceBox>(project, field, EffectFactories.AudioNamed.Compressor, "compressor")
-        c.threshold.setValue(-12 - 18 * comp)
-        c.ratio.setValue(1.5 + 4 * comp)
-        c.attack.setValue(5)
-        c.release.setValue(100)
-        c.knee.setValue(6)
-        c.automakeup.setValue(true)
-    }
+    // Our compressor script, not openDAW's stock (CTAGDRC) one: ux-enterprise ADR-0099.
+    const comp = partCompressor(amountOf(effects, "compressor"))
+    if (comp) werkstatt(project, field, "compressor", compressorScript(comp))
     const ch = {
         hp: amountOf(effects, "highpass"),
         lp: amountOf(effects, "lowpass"),
@@ -345,14 +338,7 @@ export function buildMaster(project: Project, m: Master, filter: boolean = false
     ;(IndexedBox.collectIndexedBoxes(field as any) as ReadonlyArray<any>).forEach((b, i) => b.index.setValue(i))
 
     if (m.level_db) insert<StereoToolDeviceBox>(project, field, EffectFactories.AudioNamed.StereoTool, "level").volume.setValue(m.level_db)
-    const glue = insert<CompressorDeviceBox>(project, field, EffectFactories.AudioNamed.Compressor, "glue")
-    glue.threshold.setValue(-16)
-    glue.ratio.setValue(2)
-    glue.attack.setValue(10)
-    glue.release.setValue(150)
-    glue.knee.setValue(6)
-    glue.automakeup.setValue(false)
-    glue.makeup.setValue(1)
+    werkstatt(project, field, "glue", compressorScript(GLUE))
     if (m.grit) sampler(project, field, m.grit, "grit")
     werkstatt(project, field, "tape", tapeScript(m.tape ?? 0, m.dust ?? 0))
     if (filter) {
