@@ -17,7 +17,7 @@ import {PlayIn} from "./playin"
 import {applyKey, applySwing, buildMaster, buildTrackChain, laneFields, masterFilterFrequency, masterSignature, trackSignature} from "./chain"
 import {automationSignature, clearAutomation, type MasterAutomation, type TrackAutomation, writeAutomation} from "./automation"
 import {
-    applyPadSlice, applySynth, attachProviders, type Instrument, isTexture, kitAttachment, kitGmOf, kitSignature, padPan, registerAssets, soundfontBox
+    applyPadSlice, applyStock, applySynth, attachProviders, STOCK_DEVICE, type Instrument, isTexture, kitAttachment, kitGmOf, kitSignature, padPan, registerAssets, soundfontBox
 } from "./instruments"
 
 type Note = [number, number, number, number]
@@ -287,7 +287,7 @@ export class Bridge {
                 const inst = this.#instrument(t.sound)
                 const basic = SOUNDS[t.sound] ?? SOUNDS["pad/warm"]
                 const factoryName = inst.kind === "synth" ? "Vaporisateur" : inst.kind === "sampled" ? "Soundfont"
-                    : inst.kind === "kit" ? "Playfield" : basic.factory
+                    : inst.kind === "kit" ? "Playfield" : inst.kind === "stock" ? STOCK_DEVICE[inst.engine] : basic.factory
                 const factory = InstrumentFactories.Named[factoryName] as any
                 const attachment = inst.kind === "kit" ? kitAttachment(inst)
                     : inst.kind === "sampled" ? soundfontBox(project, inst.file)
@@ -302,6 +302,7 @@ export class Bridge {
                     applyPadSlice(inst, box)
                 }
                 if (inst.kind === "synth") applySynth(product.instrumentBox, inst)
+                if (inst.kind === "stock") applyStock(api, product.instrumentBox, inst)
                 m = {unit: product.audioUnitBox, track: product.trackBox, sound: t.sound, pads: inst.kind === "kit" ? kitSignature(inst) : "", fx: "", auto: ""}
                 this.#managed.set(t.id, m)
             }
@@ -332,7 +333,7 @@ export class Bridge {
         for (const t of song.tracks) {
             const m = this.#managed.get(t.id)!
             const inst = this.#instrument(t.sound)
-            const trim = inst.kind === "synth" || inst.kind === "sampled" ? inst.trim_db : 0
+            const trim = inst.kind === "synth" || inst.kind === "sampled" || inst.kind === "stock" ? inst.trim_db : 0
             const auto = this.#automation[t.id]
             const ctx = {duckSource, trim, sectionFilter: !!auto?.lowpass, sectionHighpass: !!auto?.highpass, spaceLane: !!auto?.reverb, width: this.#width[t.id] ?? 0}
             const sig = trackSignature(t.effects, ctx)
