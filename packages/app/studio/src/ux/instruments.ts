@@ -8,6 +8,7 @@ import {Progress, UUID} from "@opendaw/lib-std"
 import {AudioData} from "@opendaw/lib-dsp"
 import {Project} from "@opendaw/studio-core"
 import {SoundfontFileBox} from "@opendaw/studio-boxes"
+import {InstrumentFactories} from "@opendaw/studio-adapters"
 import {StudioService} from "@/service/StudioService"
 
 export type Wave = "sine" | "triangle" | "saw" | "square"
@@ -31,7 +32,47 @@ export type Pad = {
 /** Only the pads the song plays; the API resolves every kit note to one of them (pad_notes). */
 export type KitInstrument = { kind: "kit", pads: Pad[] }
 export type BasicInstrument = { kind: "basic" }
-export type Instrument = SynthInstrument | SampledInstrument | KitInstrument | BasicInstrument
+/** A stock synth set field by field from the server's recipe (stock synths brief Y1), or a few as layers. */
+export type StockEngine = "fm" | "modal" | "acid" | "subtractive"
+export type StockLayer = { engine: "fm" | "modal" | "subtractive", set: Record<string, number>, gain_db: number, pan: number }
+export type StockInstrument = {
+    kind: "stock", trim_db: number, engine: StockEngine | "layers"
+    set: Record<string, number>, layers?: StockLayer[]
+}
+export type Instrument = SynthInstrument | SampledInstrument | KitInstrument | BasicInstrument | StockInstrument
+
+/** The API's engine words to openDAW's stock instruments (R4: only the adapter knows device names). */
+export const STOCK_DEVICE = {
+    fm: "Tubular", modal: "Korpus", acid: "Cubed", subtractive: "Vaporisateur", layers: "InstrumentComposite"
+} as const
+
+/** Writes each setting the server sent, by its field path ("operators.2.outputLevel"). Chooses nothing. */
+export function applyFields(box: any, set: Record<string, number>) {
+    for (const [path, value] of Object.entries(set)) {
+        let field = box
+        for (const part of path.split(".")) {
+            field = field === undefined ? undefined : /^\d+$/.test(part) ? field.fields?.()[Number(part)] : field[part]
+        }
+        if (field !== undefined && typeof field.setValue === "function") field.setValue(value)
+        else console.warn(`ux-daw: this studio has no setting ${path}; the sound may differ`)
+    }
+}
+
+/** Sets a stock instrument from its recipe; layers become cells of the composite, one part and one strip. */
+export function applyStock(api: any, box: any, s: StockInstrument) {
+    applyFields(box, s.set)
+    for (const layer of s.layers ?? []) {
+        const made = api.createCompositeLayer(box, (InstrumentFactories.Named as any)[STOCK_DEVICE[layer.engine]])
+        if (!made.isSuccess()) {
+            console.warn(`ux-daw: a layer could not be added (${made.failureReason()})`)
+            continue
+        }
+        const {cellBox, instrumentBox} = made.result()
+        cellBox.gain.setValue(layer.gain_db)
+        cellBox.pan.setValue(layer.pan)
+        applyFields(instrumentBox, layer.set)
+    }
+}
 
 const WAVE: Record<Wave, number> = {sine: 0, triangle: 1, saw: 2, square: 3}
 
